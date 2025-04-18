@@ -17,13 +17,13 @@ from pathlib import Path
 # Set up an absolute base directory for persistent browser data
 BASE_USER_DATA_DIR = str(Path(os.path.expanduser("~")) / "mlb_app_data")
 os.makedirs(BASE_USER_DATA_DIR, exist_ok=True)
-
+PROJECT_DIR = Path(__file__).parent
 
 def playSound(text):
     # Convert text to speech and play the audio
     tts = gTTS(text=text, lang='en')
-    filename = "speech.mp3"
-    tts.save(filename)
+    filename = PROJECT_DIR / "speech.mp3"
+    tts.save(str(filename))
     pygame.mixer.init()
     pygame.mixer.music.load(filename)
     pygame.mixer.music.play()
