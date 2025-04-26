@@ -4,6 +4,7 @@ import tkinter as tk
 from tkinter import ttk
 import aiohttp
 from playwright.async_api import async_playwright
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 import threading
 import psutil
 from gtts import gTTS
@@ -16,6 +17,27 @@ import uuid
 BASE_DIR    = Path.home() / "mlb_app_data"
 BASE_DIR.mkdir(exist_ok=True)
 PROJECT_DIR = Path(__file__).parent
+
+
+def controller_loop(app):
+    pygame.init()
+    pygame.joystick.init()
+    if pygame.joystick.get_count() == 0:
+        print("No controller found!")
+        return
+    js = pygame.joystick.Joystick(0)
+    js.init()
+    print("Controller initialized:", js.get_name())
+
+    while True:
+        for ev in pygame.event.get():
+            # any button press, any axis movement, any hat motion → next game
+            if ev.type == pygame.JOYBUTTONDOWN \
+                    or ev.type == pygame.JOYAXISMOTION \
+                    or ev.type == pygame.JOYHATMOTION:
+                app.root.after(0, app.next_game)
+        time.sleep(0.01)
+
 
 def dbg(*args, **kwargs):
     print("[DEBUG]", *args, **kwargs)
@@ -71,16 +93,50 @@ class StreamManager:
         await asyncio.sleep(1)
         self.ready.set()
 
+    # ——— BACK IN StreamManager ———
+    async def mute_page(self):
+        """Mute all audio/video on the current page."""
+        if self.page:
+            await self.page.evaluate(
+                "() => { document.querySelectorAll('audio, video, iframe').forEach(el=>el.muted = true); }"
+            )
+            dbg(f"Muted {self.dir.name} page")
+
+    async def unmute_page(self):
+        """Unmute all audio/video on the current page."""
+        if self.page:
+            await self.page.evaluate(
+                "() => { document.querySelectorAll('audio, video, iframe').forEach(el=>el.muted = false); }"
+            )
+            dbg(f"Unmuted {self.dir.name} page")
     async def open(self, url):
+
+        async def wait_for_network_idle_with_timeout(page, timeout):
+            try:
+                # Wait for the network idle state with a manual timeout
+                await asyncio.wait_for(page.wait_for_load_state("networkidle"), timeout)
+                print("Network idle state achieved.")
+            except asyncio.TimeoutError:
+                print(f"Operation timed out after {timeout} seconds.")
+
+        # Example usage with a 10-second timeout
+
         await self.ready.wait()
         if self.page:
             await self.page.close()
         self.page = await self.ctx.new_page()
         await self.page.goto(url)
         dbg("Opened", url)
-
+        await self.unmute_page()
         # — NBA auto‑login & click “Listen”/“Watch Live” —
         if self.dir.name.lower() == "nba":
+            try:
+                await self.page.wait_for_selector('#onetrust-accept-btn-handler', timeout=3000)
+                await self.page.click('#onetrust-accept-btn-handler')
+                dbg("Clicked cookie‑consent accept")
+            except Exception:
+                pass
+
             # If signed‑out link present, go log in
             if await self.page.query_selector('a[href="/account/sign-in"]'):
                 dbg("NBA signed‑out → signing in…")
@@ -107,39 +163,84 @@ class StreamManager:
                 except:
                     dbg("NBA audio button not found.")
 
-        # — MLB auto‑login —
+        # … inside your auto‑login routine, after you do page.goto(url) …
+# … inside your auto‑login routine, after you do page.goto(url) …
         elif self.dir.name.lower() == "mlb":
-            # if MLB sends you to login (identifier input exists)
-            if await self.page.query_selector('input[name="identifier"], #input28'):
-                dbg("MLB signed‑out → signing in…")
-                # fill username
-                await self.page.fill('input[name="identifier"], #input28',
-                                     (BASE_DIR/"credentials-mlb.txt").read_text().splitlines()[0])
-                # click Continue
-                await self.page.click('input.button-primary[type="submit"], input[type="submit"][value="Continue"]')
-                # possibly factor‑select
+            # give the page a moment to settle
+            await wait_for_network_idle_with_timeout(self.page, timeout=10)
+
+            # 1) dismiss OneTrust banner (main frame or any frame)
+            btn = await self.page.query_selector('#onetrust-accept-btn-handler')
+            if btn:
+                await btn.click()
+                dbg("Clicked OneTrust accept in main frame")
+            else:
+                for frame in self.page.frames:
+                    btn = await frame.query_selector('#onetrust-accept-btn-handler')
+                    if btn:
+                        await btn.click()
+                        dbg(f"Clicked OneTrust accept in frame {frame.name or frame.url}")
+                        break
+
+            # 2) detect & fill username if we’re on the login page
+            try:
+                identifier = await self.page.wait_for_selector(
+                    'input[name="identifier"], input[autocomplete="username"]',
+                    timeout=5000
+                )
+                dbg("MLB login prompt detected – filling username/password")
+
+                # read credentials
+                username, password = (BASE_DIR / "credentials-mlb.txt")\
+                    .read_text().splitlines()[:2]
+
+                # fill username + continue
+                await identifier.fill(username)
+                await self.page.click(
+                    'input.button-primary[type="submit"], input[type="submit"][value="Continue"]'
+                )
+                dbg("Submitted MLB username")
+
+                # optional “Verify Account With Password”
                 try:
-                    await self.page.wait_for_selector('a.select-factor', timeout=5000)
-                    await self.page.click('a.select-factor')
-                except:
-                    pass
-                # fill password
-                await self.page.wait_for_selector('input[name="credentials.passcode"], #input62', timeout=10000)
-                await self.page.fill('input[name="credentials.passcode"], #input62',
-                                     (BASE_DIR/"credentials-mlb.txt").read_text().splitlines()[1])
-                # click to submit password
-                try:
-                    await self.page.click('input[type="submit"][value="Login"], button[type="submit"]')
-                except:
-                    await self.page.click('input[type="submit"]')
-                await self.page.wait_for_load_state("networkidle")
-                # back to the game
-                await self.page.goto(url)
-                dbg("MLB login complete, reloaded game page.")
+                    verify = await self.page.wait_for_selector(
+                        'a.button.select-factor.link-button:has-text("Verify Account With Password")',
+                        timeout=2000
+                    )
+                    await verify.click()
+                    dbg("Clicked ‘Verify Account With Password’")
+                except PlaywrightTimeoutError:
+                    dbg("No ‘Verify Account With Password’ link")
+
+            except PlaywrightTimeoutError:
+                dbg("No MLB username prompt (already signed in?)")
+
+            # 3) detect & fill password if prompted
+            try:
+                pwd_field = await self.page.wait_for_selector(
+                    'input[name="credentials.passcode"], #input62',
+                    timeout=2000
+                )
+                await pwd_field.fill(password)
+                dbg("Filled MLB password")
+
+                await self.page.wait_for_selector(
+                    'input.button.button-primary[type="submit"][value="Log in"][data-type="save"]')
+                await self.page.click('input.button.button-primary[type="submit"][value="Log in"][data-type="save"]')
+
+                await self.page.wait_for_url("**/tv/**", timeout=5000)
+
+                # 4) submit and wait to be back on /tv/ page
+               # await asyncio.gather(
+               #     self.page.click('input[type="submit"][value="Login"], button[type="submit"]'),
+               #     self.page.wait_for_url("**/tv/**", timeout=5000)
+               # )
+                dbg("MLB login complete, back on TV page")
+
+            except PlaywrightTimeoutError:
+                dbg("No MLB password prompt (already signed in?)")
 
 class GameCycler:
-
-
     def __init__(self, root):
         self.root       = root
         root.title("NBA + MLB Cycler")
@@ -308,6 +409,11 @@ class GameCycler:
         raise RuntimeError("MLB game not found")
 
     def _render_current(self):
+          # if we’re switching from a previous live stream, mute it
+
+        if hasattr(self, "last_mgr") and self.last_mgr:
+            asyncio.run_coroutine_threadsafe(self.last_mgr.mute_page(), self.loop)
+
         # 1) Stop any “loading…” loop
         self.loading = False
 
@@ -435,6 +541,7 @@ class GameCycler:
                 url = f"https://www.mlb.com/tv/g{g['gamePk']}"
                 mgr = self.mlb_mgr
             asyncio.run_coroutine_threadsafe(mgr.open(url), self.loop)
+            self.last_mgr = mgr
 
     def _speak_all(self, match, status, score):
         playSound(match)
@@ -445,5 +552,13 @@ class GameCycler:
 if __name__ == "__main__":
     kill_edge()
     root = tk.Tk()
-    GameCycler(root)
+    game = GameCycler(root)
+
+    # start listening to the controller
+    controller_thread = threading.Thread(
+        target=controller_loop,
+        args=(game,),
+        daemon=True
+    )
+    controller_thread.start()
     root.mainloop()
