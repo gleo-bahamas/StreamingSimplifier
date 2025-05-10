@@ -152,16 +152,16 @@ class StreamManager:
 
             # then kick off the audio
             try:
-                await self.page.wait_for_selector('button:text("Listen")', timeout=5000)
-                await self.page.click('button:text("Listen")')
-                dbg("Clicked NBA “Listen”")
+                await self.page.wait_for_selector('button:text("Watch Live")', timeout=5000)
+                await self.page.click('button:text("Watch Live")')
+                dbg("Clicked NBA “Watch Live”")
             except:
                 try:
-                    await self.page.wait_for_selector('button:text("Watch Live")', timeout=5000)
-                    await self.page.click('button:text("Watch Live")')
-                    dbg("Clicked NBA “Watch Live”")
+                    await self.page.wait_for_selector('button:text("Listen")', timeout=5000)
+                    await self.page.click('button:text("Listen")')
+                    dbg("Clicked NBA “Listen”")
                 except:
-                    dbg("NBA audio button not found.")
+                    dbg("NBA watch button not found.")
 
         # … inside your auto‑login routine, after you do page.goto(url) …
 # … inside your auto‑login routine, after you do page.goto(url) …
