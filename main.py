@@ -234,7 +234,7 @@ class StreamManager:
                # await asyncio.gather(
                #     self.page.click('input[type="submit"][value="Login"], button[type="submit"]'),
                #     self.page.wait_for_url("**/tv/**", timeout=5000)
-               # )
+               #)
                 dbg("MLB login complete, back on TV page")
 
             except PlaywrightTimeoutError:
