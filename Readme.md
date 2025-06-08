@@ -30,7 +30,7 @@ Follow these steps to get StreamingSimplifier up and running:
 
 1.  **Clone the repository**:
     ```bash
-    git clone [https://github.com/gleo-bahamas/StreamingSimplifier.git](https://github.com/gleo-bahamas/StreamingSimplifier.git)
+    git clone https://github.com/gleo-bahamas/StreamingSimplifier.git
     cd StreamingSimplifier
     ```
 
