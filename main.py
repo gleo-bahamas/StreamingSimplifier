@@ -13,10 +13,24 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 import uuid
+import atexit
+import shutil
 
 BASE_DIR    = Path.home() / "mlb_app_data"
 BASE_DIR.mkdir(exist_ok=True)
 PROJECT_DIR = Path(__file__).parent
+SPEECH_DIR  = PROJECT_DIR / "speech_mp3s"
+SPEECH_DIR.mkdir(exist_ok=True)
+
+# Clear out any leftovers from prior runs
+for old in SPEECH_DIR.glob("speech_*.mp3"):
+    try:
+        old.unlink()
+    except:
+        pass
+
+# Register end-of-program cleanup
+atexit.register(lambda: shutil.rmtree(SPEECH_DIR, ignore_errors=True))
 
 
 def controller_loop(app):
@@ -60,7 +74,7 @@ def parse_nba_status(raw: str) -> str:
     return raw or "Status not available"
 
 def playSound(text):
-    fn = PROJECT_DIR / f"speech_{uuid.uuid4().hex}.mp3"
+    fn = SPEECH_DIR / f"speech_{uuid.uuid4().hex}.mp3"
     try:
         gTTS(text=text, lang="en").save(str(fn))
         pygame.mixer.music.load(str(fn))
@@ -70,8 +84,11 @@ def playSound(text):
     except Exception as e:
         print("playSound error:", e)
     finally:
-        try: fn.unlink()
-        except: pass
+        # best effort: delete once playback is fully done
+        try:
+            fn.unlink()
+        except Exception:
+            pass
 
 def kill_edge():
     for p in psutil.process_iter(['pid','name']):
@@ -84,6 +101,7 @@ class StreamManager:
         self.dir   = BASE_DIR/subdir; self.dir.mkdir(exist_ok=True)
         self.ctx   = None; self.page = None
         self.ready = asyncio.Event()
+        self._mlb_feed_index = 0
 
     async def start(self):
         pw = await async_playwright().start()
@@ -230,13 +248,36 @@ class StreamManager:
 
                 await self.page.wait_for_url("**/tv/**", timeout=5000)
 
-                # 4) submit and wait to be back on /tv/ page
-               # await asyncio.gather(
-               #     self.page.click('input[type="submit"][value="Login"], button[type="submit"]'),
-               #     self.page.wait_for_url("**/tv/**", timeout=5000)
-               #)
-                dbg("MLB login complete, back on TV page")
+                # now we’re on the protected MLB TV page
+                await self.page.wait_for_load_state("networkidle")
 
+                # === Try Audio Feed First ===
+                try:
+                    # 1) open the broadcast selector
+                    await self.page.get_by_role("button", name="Broadcast selector").click()
+                    dbg("Clicked Broadcast selector")
+
+                    # 2) grab *all* audio‐feed buttons by their accessible name
+                    feeds = self.page.get_by_role("button").filter(
+                        has=self.page.get_by_label("AUDIO -")
+                    )
+                    count = await feeds.count()
+                    if count > 0:
+                        # pick the one at our current index
+                        idx = self._mlb_feed_index % count
+                        feed_btn = feeds.nth(idx)
+                        label = await feed_btn.get_attribute("aria-label")
+                        await feed_btn.click()
+                        dbg(f"Clicked MLB audio feed: {label}")
+                        self._mlb_feed_index += 1
+                        return  # done—audio is playing
+                    else:
+                        dbg("No enabled audio feeds found, falling back to TV")
+                except Exception as e:
+                    dbg("Audio‐feed attempt failed:", e)
+
+                # === Fallback to TV (do nothing since the video is already loaded) ===
+                dbg("Falling back to TV stream")
             except PlaywrightTimeoutError:
                 dbg("No MLB password prompt (already signed in?)")
 
