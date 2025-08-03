@@ -144,3 +144,12 @@ All notable changes documented here; using 0.x “pre-1.0” versioning.
   * Refined button labels
   * Added inline help text
   * Minor layout spacing adjustments
+
+---
+
+## 0.6.2 – 2025-08-03
+
+* **Speech-file cleanup**
+  * On startup, purge any leftover `speech_*.mp3` files before playback.
+  * On exit, remove the entire speech-MP3 directory via an `atexit` handler.
+  * Retain per-clip deletion in `playSound` to catch any stragglers after playback.
