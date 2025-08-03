@@ -100,7 +100,7 @@ All notable changes documented here; using 0.x “pre-1.0” versioning.
 
 ---
 
-## 0.5.0 – 2025-04-02 to 2025-04-09
+## 0.5.0 – 2025-04-09
 
 * Packaging & installer prep
 
