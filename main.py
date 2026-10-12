@@ -353,16 +353,27 @@ class StreamManager:
             '#submit, #email-submit, [data-testid="continue"], button[type="submit"], input[type="submit"]'
         ).first
         deadline = time.monotonic() + timeout
-        email_done = False
+        email_done = pwd_done = False
+        last_submit = 0.0
         while time.monotonic() < deadline:
             try:
-                if await pwd_f.is_visible():
+                if "/account/sign-in" not in page.url:
+                    return   # redirected away from the sign-in page: logged in
+                if pwd_done:
+                    # Already submitted. Only retry every 10s so the page is not scrolled
+                    # constantly while the user ticks "I'm not a robot".
+                    if time.monotonic() - last_submit >= 10 and await pwd_f.is_visible():
+                        await pwd_f.fill(pwd)
+                        await button.click()
+                        last_submit = time.monotonic()
+                        dbg("Retried NBA sign-in")
+                    await asyncio.sleep(1)
+                elif await pwd_f.is_visible():
                     await pwd_f.fill(pwd)
                     await button.click()
-                    dbg("Submitted NBA password")
-                    await asyncio.sleep(3)
-                    if not await pwd_f.is_visible():
-                        return
+                    pwd_done = True
+                    last_submit = time.monotonic()
+                    dbg("Submitted NBA password (if a robot check shows, tick it, then press Sign in)")
                 elif await email_f.is_visible() and not email_done:
                     await email_f.fill(user)
                     await page.keyboard.press("Tab")
@@ -370,25 +381,12 @@ class StreamManager:
                     email_done = True
                     dbg("Submitted NBA email")
                     await asyncio.sleep(2)
-                elif "/account/sign-in" not in page.url:
-                    return   # redirected away from the sign-in page: logged in
                 else:
                     await asyncio.sleep(0.5)
             except Exception as e:   # page navigated mid-check; look again
                 dbg("NBA login step retry:", e)
                 await asyncio.sleep(1)
         dbg("NBA login did not finish within", timeout, "seconds")
-
-    async def _mlb_dismiss_cookies(self):
-        btn = await self.page.query_selector('#onetrust-accept-btn-handler')
-        if btn:
-            await btn.click()
-            return
-        for frame in self.page.frames:
-            btn = await frame.query_selector('#onetrust-accept-btn-handler')
-            if btn:
-                await btn.click()
-                return
 
     async def _mlb_wait_for_manual_login(self, timeout=300):
         """No saved login: give the user time to sign in by hand until the player page is up."""
