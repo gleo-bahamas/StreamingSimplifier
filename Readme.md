@@ -1,32 +1,34 @@
 # StreamingSimplifier
 
-A desktop application designed to track live NBA and MLB games and stream their associated audio broadcasts. Built with Python and Tkinter for the graphical user interface, it uses Playwright to launch and manage dedicated Chromium (Edge) browser contexts for seamless audio streaming.
+A local desktop app that cycles through today's MLB and NBA games, announces each matchup and score out loud, and opens the game's stream (TV feed first, radio if there is no TV). Built with Python and Tkinter, with Playwright driving dedicated Microsoft Edge profiles for MLB.TV and NBA League Pass. Everything runs on your own machine; there is no cloud service, tunnel or voice-assistant hook.
 
 ---
 
 ## Features
 
-* **NBA Tab**: Fetches live NBA game data, displaying matchups, scores, and game status. It automatically manages the NBA.com live audio feed, handling muting/unmuting upon tab switching.
-* **MLB Tab**: Retrieves live MLB game data from the MLB Stats API, showing matchups, scores, and game status. It auto-launches the MLB.com live audio, including robust retry logic for dismissing player modals.
-* **Radio Tab**: Plays preset radio stations (ESPN, Fox, CBS Sports, 1540 AM) within persistent browser contexts. It supports muting/unmuting, with special handling for ESPN’s custom volume slider.
-* **Controller Support**: Navigate tabs and cycle through games/stations effortlessly using a connected game controller via `pygame`.
-* **Text-to-Speech**: Announces matchups, scores, and status updates using Google TTS and `pygame` for audio playback.
-* **Persistent Browser Data**: Stores browser user data (e.g., login, session info) locally in `user_data/` (or `~/mlb_app_data` as configured for Playwright profiles) to preserve session state.
-* **Automatic Tab Switching**: If no active NBA or MLB games are found, the application intelligently switches to the next available tab (e.g., MLB → Radio).
+* **One game list**: Today's MLB games first, then NBA games, each group ordered live, then final, then upcoming.
+* **Next Game**: A button (or any controller button) moves to the next game and announces the matchup, status and score with Google text-to-speech.
+* **TV first, radio second**:
+  * **NBA**: clicks **Watch Live** (not Resume); if that is missing it uses **Listen**.
+  * **MLB**: keeps the TV feed MLB.TV loads; only if no video starts within 15 seconds does it switch to a radio (audio) feed.
+* **Auto login**: Signs in to NBA.com and MLB.com for you, handling whichever login step is on screen. Browser profiles are kept locally so a saved session can skip the login.
+* **Streams open ahead of time**: Games that start within 45 minutes are opened; the previous stream is muted.
+* **Controller support**: Any button, stick or hat press on a connected controller goes to the next game (via `pygame`).
+* **Rapid-press safe**: Fast double presses are ignored and only one game loads at a time.
+* **Temporary speech files**: Each spoken clip is deleted right after it plays, leftovers are swept on startup, and the folder is removed on exit.
 
 ---
 
 ## Prerequisites
 
 * **Python 3.8** or higher
-* **Microsoft Edge (Chromium)** installed (or configure the `channel` parameter in the code to `chrome` for Google Chrome support)
-* A modern **game controller** (optional, for hands-free navigation)
+* **Microsoft Edge** installed (or change the `channel` in `StreamManager.start` to `chrome`)
+* Accounts for **NBA League Pass** and **MLB.TV**
+* A game controller (optional)
 
 ---
 
 ## Setup
-
-Follow these steps to get StreamingSimplifier up and running:
 
 1.  **Clone the repository**:
     ```bash
@@ -46,59 +48,45 @@ Follow these steps to get StreamingSimplifier up and running:
         .\.venv\Scripts\activate
         ```
 
-3.  **Install Python dependencies**:
+3.  **Install dependencies**:
     ```bash
     pip install --upgrade pip
     pip install -r requirements.txt
     ```
 
-4.  **Install Playwright browsers** (first-time only):
+4.  **Install Playwright browsers** (first time only):
     ```bash
     playwright install
     ```
-
-5.  **Create a launch script** (Windows only, recommended for easy execution):
-    In your project's root directory (`StreamingSimplifier/`), create a file named `launch.bat` and paste the following content:
-    ```batch
-    @echo off
-    REM This script activates the Python virtual environment and runs main.py
-
-    REM Define the path to your project directory.
-    REM IMPORTANT: Adjust if your project is not in 'C:\Users\admin\StreamingSimplifier'
-    set "PROJECT_DIR=C:\Users\admin\StreamingSimplifier"
-
-    REM Navigate to the project directory
-    cd /d "%PROJECT_DIR%"
-
-    REM Activate the virtual environment
-    call ".\.venv\Scripts\activate.bat"
-
-    REM Run your main Python application
-    python main.py
-
-    REM Optional: Remove 'pause' if you want the command window to close immediately
-    pause
-    ```
-    **Note:** If you plan to launch this via AutoHotkey with the `Hide` option, you might want to remove the `pause` line from `launch.bat`.
 
 ---
 
 ## Usage
 
-To launch the application:
+* **Windows**: Double-click `launch.bat`, or install [AutoHotkey v1](https://www.autohotkey.com/) and run `Launch.ahk`. Press **F2** to start the app, or to bring it forward if it is already running. Both scripts use their own folder, so the project can live anywhere.
+* **Any platform**: With the virtual environment active, run `python main.py`.
 
-* **Windows (Recommended)**: Double-click the `launch.bat` file in your project's root directory.
-* **All Platforms (Manual)**:
-    1.  Open your terminal.
-    2.  Navigate to the `StreamingSimplifier` directory.
-    3.  Activate your virtual environment (as shown in Step 2 of Setup).
-    4.  Run: `python main.py`
+On start-up the app closes any open Edge windows, opens the MLB and NBA browsers, loads today's games and starts with the first one. Press **Next Game** (or a controller button) to move on.
 
-Once launched:
-* Switch between tabs to view NBA scores, MLB scores, or listen to radio stations.
-* Click **Next NBA Game** / **Next MLB Game** / **Next Station** buttons to cycle through options.
-* Use a connected controller for hands-free navigation.
+---
+
+## Notes
+
+* NBA's scoreboard feed (`cdn.nba.com`) refuses plain scripts, so the app falls back to reading it from inside the NBA browser page.
+* If you are never asked to log in again after the first time, the saved profile is working. If you are asked every launch, the site is not keeping a long-lived session cookie.
+* Console lines starting with `[DEBUG]` show each step (login, which button was clicked, which feed was chosen). Include them when reporting a problem.
 
 ---
 
 ## Project Structure
+
+```
+StreamingSimplifier/
+├── main.py            # the app: game list, speech, browsers, logins
+├── launch.bat         # activates the venv and runs main.py
+├── Launch.ahk         # F2 hotkey to start or focus the app
+├── nba_playwright.py  # older standalone NBA script (not used by main.py)
+├── requirements.txt
+├── CHANGELOG.MD
+└── Readme.md
+```

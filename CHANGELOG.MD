@@ -153,3 +153,26 @@ All notable changes documented here; using 0.x “pre-1.0” versioning.
   * On startup, purge any leftover `speech_*.mp3` files before playback.
   * On exit, remove the entire speech-MP3 directory via an `atexit` handler.
   * Retain per-clip deletion in `playSound` to catch any stragglers after playback.
+
+
+---
+
+## 0.7.0 – 2026-10-11
+
+* **Back to fully local**
+  * Removed the Alexa/cloud pieces: local control API and token, `agent.py`, `lambda_function.py`, `cloudflared.exe`.
+  * `Launch.ahk` is F2-only and `launch.bat` finds its own folder (fixed a `CC:\` typo).
+* **NBA (new season)**
+  * `cdn.nba.com` now returns 403 to plain scripts; the scoreboard is read from inside the NBA browser page when the direct request fails.
+  * Upcoming-game check uses `gameTimeUTC` (the old field did not exist, so the 45-minute pre-open never ran).
+  * Login reads the page's sign-in flag, handles the League Pass sign-in popup and the email, password and Continue steps in any order.
+  * Clicks **Watch Live** instead of **Resume**; removed extra waits that slowed the start.
+* **MLB**
+  * Login handles each step as it appears, and credentials are read up front (fixes a crash when the password step came first).
+  * TV feed first; a radio feed is used only if no video starts within 15 seconds.
+  * MLB games are listed before NBA games.
+* **Housekeeping**
+  * Background `open()` errors now print to the console.
+  * Speech clips are unloaded from pygame before deletion, so they are removed right after playing.
+  * Added `.gitignore`; stopped tracking `speech.mp3`.
+  * README rewritten for the current single-window app.
