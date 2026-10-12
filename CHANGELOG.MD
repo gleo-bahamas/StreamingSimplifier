@@ -171,6 +171,9 @@ All notable changes documented here; using 0.x “pre-1.0” versioning.
   * Login handles each step as it appears, and credentials are read up front (fixes a crash when the password step came first).
   * TV feed first; a radio feed is used only if no video starts within 15 seconds.
   * MLB games are listed before NBA games.
+* **Favorites and logins**
+  * Favorite teams come first within their league (Red Sox, Cubs for MLB; Celtics, Knicks for NBA); edit `FAVORITES` in `main.py`.
+  * Optional login storage in Windows Credential Manager (`StreamingSimplifier-nba`, `StreamingSimplifier-mlb`); with no entry the app waits for a manual sign-in. The plain-text credentials files are no longer read.
 * **Housekeeping**
   * Background `open()` errors now print to the console.
   * Speech clips are unloaded from pygame before deletion, so they are removed right after playing.

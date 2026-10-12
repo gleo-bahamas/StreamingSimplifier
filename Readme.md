@@ -7,11 +7,12 @@ A local desktop app that cycles through today's MLB and NBA games, announces eac
 ## Features
 
 * **One game list**: Today's MLB games first, then NBA games, each group ordered live, then final, then upcoming.
+* **Favorite teams first**: Within MLB the Red Sox and Cubs come first, within NBA the Celtics and Knicks (when they play that day). Change the `FAVORITES` list in `main.py` to use your own.
 * **Next Game**: A button (or any controller button) moves to the next game and announces the matchup, status and score with Google text-to-speech.
 * **TV first, radio second**:
   * **NBA**: clicks **Watch Live** (not Resume); if that is missing it uses **Listen**.
   * **MLB**: keeps the TV feed MLB.TV loads; only if no video starts within 15 seconds does it switch to a radio (audio) feed.
-* **Auto login**: Signs in to NBA.com and MLB.com for you, handling whichever login step is on screen. Browser profiles are kept locally so a saved session can skip the login.
+* **Auto login**: Signs in to NBA.com and MLB.com for you if you have saved your logins (see below), handling whichever login step is on screen. Otherwise you sign in by hand in the browser window. Browser profiles are kept locally so a saved session can skip the login.
 * **Streams open ahead of time**: Games that start within 45 minutes are opened; the previous stream is muted.
 * **Controller support**: Any button, stick or hat press on a connected controller goes to the next game (via `pygame`).
 * **Rapid-press safe**: Fast double presses are ignored and only one game loads at a time.
@@ -58,6 +59,19 @@ A local desktop app that cycles through today's MLB and NBA games, announces eac
     ```bash
     playwright install
     ```
+
+5.  **Optional: save your logins so the app signs in for you.** If you would rather not type your passwords in the browser window, store them in Windows Credential Manager (nothing is kept in the project folder):
+    1.  Press Start, type **Credential Manager** and open it.
+    2.  Click **Windows Credentials**, then **Add a generic credential**.
+    3.  For NBA, fill in:
+        * **Internet or network address:** `StreamingSimplifier-nba`
+        * **User name:** your NBA.com email
+        * **Password:** your NBA.com password
+    4.  Click **OK**, then repeat for MLB with the address `StreamingSimplifier-mlb` and your MLB.com login.
+
+    The two addresses must be spelled exactly as shown. If an entry is missing, the app leaves that site alone and waits for you to sign in by hand.
+
+    **First NBA sign-in:** NBA shows an "I'm not a robot" check the first time. Click it yourself in the browser window; afterwards the saved browser profile normally keeps you signed in. MLB works the same way, and if a site asks again later, just sign in and carry on.
 
 ---
 

@@ -16,6 +16,7 @@ import uuid
 import atexit
 import shutil
 import re
+import sys
 
 BASE_DIR = Path.home() / "mlb_app_data"
 BASE_DIR.mkdir(exist_ok=True)
@@ -42,6 +43,57 @@ NBA_HEADERS = {
     "Origin": "https://www.nba.com",
     "Accept": "application/json, text/plain, */*",
 }
+
+
+# Favorite teams, in the order they come first WITHIN their own league (when they play today).
+# MLB games are still listed before NBA games. Each entry is (league, text in the team name).
+FAVORITES = [
+    ("MLB", "Red Sox"),
+    ("MLB", "Cubs"),
+    ("NBA", "Celtics"),
+    ("NBA", "Knicks"),
+]
+
+
+def _windows_login(site):
+    """(username, password) from Windows Credential Manager entry 'StreamingSimplifier-<site>', or None."""
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    class CREDENTIAL(ctypes.Structure):
+        _fields_ = [
+            ("Flags", wintypes.DWORD), ("Type", wintypes.DWORD),
+            ("TargetName", wintypes.LPWSTR), ("Comment", wintypes.LPWSTR),
+            ("LastWritten", wintypes.FILETIME),
+            ("CredentialBlobSize", wintypes.DWORD),
+            ("CredentialBlob", ctypes.POINTER(ctypes.c_ubyte)),
+            ("Persist", wintypes.DWORD), ("AttributeCount", wintypes.DWORD),
+            ("Attributes", ctypes.c_void_p), ("TargetAlias", wintypes.LPWSTR),
+            ("UserName", wintypes.LPWSTR),
+        ]
+
+    advapi32 = ctypes.windll.advapi32
+    cred_ptr = ctypes.POINTER(CREDENTIAL)()
+    CRED_TYPE_GENERIC = 1
+    if not advapi32.CredReadW(f"StreamingSimplifier-{site}", CRED_TYPE_GENERIC, 0, ctypes.byref(cred_ptr)):
+        return None
+    try:
+        c = cred_ptr.contents
+        raw = bytes(ctypes.cast(c.CredentialBlob, ctypes.POINTER(ctypes.c_ubyte * c.CredentialBlobSize)).contents)
+        return c.UserName, raw.decode("utf-16-le")
+    finally:
+        advapi32.CredFree(cred_ptr)
+
+
+def load_login(site):
+    """(username, password) for 'nba' or 'mlb' from Windows Credential Manager, or None to sign in by hand."""
+    found = _windows_login(site)
+    if found and found[0] and found[1]:
+        return found
+    dbg(f"No saved login 'StreamingSimplifier-{site}': sign in by hand in the browser window")
+    return None
 
 
 def controller_loop(app):
@@ -280,11 +332,21 @@ class StreamManager:
             dbg("NBA auth flag not found:", e)
             return False
 
-    async def _nba_login(self, timeout=45):
-        """Go through the NBA sign-in steps (email, Continue, password, Sign in) as they appear."""
-        user, pwd = (BASE_DIR / "credentials-nba.txt").read_text().splitlines()[:2]
+    async def _nba_login(self, timeout=120):
+        """Go through the NBA sign-in steps (email, Continue, password, Sign in) as they appear.
+
+        The generous timeout leaves room for NBA's one-time "I'm not a robot" check.
+        With no saved login, wait for the user to sign in by hand.
+        """
+        login = load_login("nba")
         page = self.page
         await page.goto("https://www.nba.com/account/sign-in")
+        if not login:
+            deadline = time.monotonic() + 300
+            while time.monotonic() < deadline and "/account/sign-in" in page.url:
+                await asyncio.sleep(1)
+            return
+        user, pwd = login
         email_f = page.locator('#email, input[type="email"], input[name="email"]').first
         pwd_f   = page.locator('#password, input[type="password"]').first
         button  = page.locator(
@@ -328,6 +390,24 @@ class StreamManager:
                 await btn.click()
                 return
 
+    async def _mlb_wait_for_manual_login(self, timeout=300):
+        """No saved login: give the user time to sign in by hand until the player page is up."""
+        page = self.page
+        fields = 'input[name="identifier"], input[autocomplete="username"], input[type="password"]'
+        deadline = time.monotonic() + timeout
+        quiet = 0
+        while time.monotonic() < deadline:
+            try:
+                if "/tv/" in page.url and not await page.locator(fields).first.is_visible():
+                    quiet += 1
+                    if quiet >= 4:
+                        return
+                else:
+                    quiet = 0
+            except Exception:
+                quiet = 0
+            await asyncio.sleep(0.5)
+
     async def _mlb_login(self, timeout=45):
         """Work through whichever MLB login step is on screen until the player page is up.
 
@@ -335,7 +415,11 @@ class StreamManager:
         or come in a different order, so look at the page every half second
         instead of waiting for a fixed sequence.
         """
-        username, password = (BASE_DIR / "credentials-mlb.txt").read_text().splitlines()[:2]
+        login = load_login("mlb")
+        if not login:
+            await self._mlb_wait_for_manual_login()
+            return
+        username, password = login
         user_sel = 'input[name="identifier"], input[autocomplete="username"]'
         pwd_sel  = 'input[name="credentials.passcode"], input[type="password"]'
         verify_sel = 'a.select-factor:has-text("Verify Account With Password"), a:has-text("Verify Account With Password")'
@@ -457,6 +541,22 @@ class GameCycler:
             state = meta.get("state", "Preview")
             return 0 if state == "Live" else 1 if state == "Final" else 2
 
+    @staticmethod
+    def _team_names(entry):
+        league, meta = entry
+        if league == "NBA":
+            return [meta["awayTeam"].get("teamName", ""), meta["homeTeam"].get("teamName", "")]
+        return [meta["away"]["team"].get("name", ""), meta["home"]["team"].get("name", "")]
+
+    def _favorites_first(self, games):
+        """Within one league's list, move favorite-team games to the front in FAVORITES order (rest keep their order)."""
+        front = []
+        for league, text in FAVORITES:
+            for g in games:
+                if g[0] == league and g not in front and any(text in n for n in self._team_names(g)):
+                    front.append(g)
+        return front + [g for g in games if g not in front]
+
     def _run_loop(self):
         asyncio.set_event_loop(self.loop)
         self.loop.run_forever()
@@ -472,7 +572,7 @@ class GameCycler:
         mlb_list = [e for e in self.game_list if e[0] == "MLB"]
         nba_list.sort(key=self._status_key)
         mlb_list.sort(key=self._status_key)
-        self.game_list = mlb_list + nba_list
+        self.game_list = self._favorites_first(mlb_list) + self._favorites_first(nba_list)
 
         self.root.after(0, self._load_and_show, self.idx)
 
