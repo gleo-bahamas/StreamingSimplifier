@@ -15,11 +15,12 @@ from pathlib import Path
 import uuid
 import atexit
 import shutil
+import re
 
-BASE_DIR    = Path.home() / "mlb_app_data"
+BASE_DIR = Path.home() / "mlb_app_data"
 BASE_DIR.mkdir(exist_ok=True)
 PROJECT_DIR = Path(__file__).parent
-SPEECH_DIR  = PROJECT_DIR / "speech_mp3s"
+SPEECH_DIR = PROJECT_DIR / "speech_mp3s"
 SPEECH_DIR.mkdir(exist_ok=True)
 
 # Clear out any leftovers from prior runs
@@ -31,6 +32,16 @@ for old in SPEECH_DIR.glob("speech_*.mp3"):
 
 # Register end-of-program cleanup
 atexit.register(lambda: shutil.rmtree(SPEECH_DIR, ignore_errors=True))
+
+
+NBA_SCOREBOARD_URL = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
+NBA_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0",
+    "Referer": "https://www.nba.com/",
+    "Origin": "https://www.nba.com",
+    "Accept": "application/json, text/plain, */*",
+}
 
 
 def controller_loop(app):
@@ -45,7 +56,6 @@ def controller_loop(app):
 
     while True:
         for ev in pygame.event.get():
-            # any button press, any axis movement, any hat motion → next game
             if ev.type == pygame.JOYBUTTONDOWN \
                     or ev.type == pygame.JOYAXISMOTION \
                     or ev.type == pygame.JOYHATMOTION:
@@ -56,22 +66,61 @@ def controller_loop(app):
 def dbg(*args, **kwargs):
     print("[DEBUG]", *args, **kwargs)
 
+
+_ORDINALS = {"1": "1st", "2": "2nd", "3": "3rd", "4": "4th"}
+_QMAP_Q   = {"Q1": "1st quarter", "Q2": "2nd quarter", "Q3": "3rd quarter", "Q4": "4th quarter"}
+_QMAP_ORD = {"1st": "1st quarter", "2nd": "2nd quarter", "3rd": "3rd quarter", "4th": "4th quarter"}
+_OT_LABELS = {
+    "OT":  "overtime",
+    "2OT": "double overtime",
+    "3OT": "triple overtime",
+    "4OT": "quadruple overtime",
+}
+
+
+def _normalize_quarter_word(s: str) -> str:
+    s = s.strip()
+    if s in _QMAP_Q:
+        return _QMAP_Q[s]
+    m = re.fullmatch(r'(1st|2nd|3rd|4th)\s*(?:QTR|QUARTER)?', s, flags=re.I)
+    if m:
+        return _QMAP_ORD[m.group(1).lower()]
+    return s
+
+
 def parse_nba_status(raw: str) -> str:
     raw = (raw or "").strip()
-    if raw.lower().startswith("end of"):
-        parts = raw.split()
-        if len(parts) >= 3:
-            num = parts[-2]
-            qm = {"1st":"1st quarter","2nd":"2nd quarter",
-                  "3rd":"3rd quarter","4th":"4th quarter"}
-            return f"End of the {qm.get(num,num)}"
-        return raw
-    if raw.startswith("Q") and " " in raw:
-        q, tm = raw.split(" ",1)
-        qm = {"Q1":"1st quarter","Q2":"2nd quarter",
-              "Q3":"3rd quarter","Q4":"4th quarter"}
-        return f"{tm} to go in the {qm.get(q,q)}"
-    return raw or "Status not available"
+    if not raw:
+        return "Status not available"
+    if raw.lower() in {"final", "halftime"}:
+        return raw.capitalize()
+    m = re.match(r'^end of\s+(.+)$', raw, flags=re.I)
+    if m:
+        period = m.group(1).strip()
+        up = period.upper().replace(" ", "")
+        if up in _OT_LABELS:
+            return f"End of {_OT_LABELS[up]}"
+        return f"End of the {_normalize_quarter_word(period)}"
+    mq = re.match(r'^(Q[1-4])\s+(\d{1,2}:\d{2})$', raw, flags=re.I)
+    if mq:
+        return f"{mq.group(2)} to go in the {_QMAP_Q.get(mq.group(1).upper(), mq.group(1))}"
+    mo = re.match(r'^(1st|2nd|3rd|4th)\s*(?:QTR|QUARTER)\s+(\d{1,2}:\d{2})$', raw, flags=re.I)
+    if mo:
+        return f"{mo.group(2)} to go in the {_QMAP_ORD[mo.group(1).lower()]}"
+    mo2 = re.match(r'^(1st|2nd|3rd|4th)\s*(?:QTR|QUARTER)$', raw, flags=re.I)
+    if mo2:
+        return f"In the {_QMAP_ORD[mo2.group(1).lower()]}"
+    mq2 = re.match(r'^(Q[1-4])$', raw, flags=re.I)
+    if mq2:
+        return f"In the {_QMAP_Q[mq2.group(1).upper()]}"
+    mot = re.match(r'^([1-4]?OT)\s+(\d{1,2}:\d{2})$', raw, flags=re.I)
+    if mot:
+        ot, tm = mot.group(1).upper(), mot.group(2)
+        return f"{tm} to go in {_OT_LABELS.get(ot, ot.lower())}"
+    if raw.upper().replace(" ", "") in _OT_LABELS:
+        return f"In {_OT_LABELS[raw.upper().replace(' ', '')]}"
+    return raw
+
 
 def playSound(text):
     fn = SPEECH_DIR / f"speech_{uuid.uuid4().hex}.mp3"
@@ -84,22 +133,32 @@ def playSound(text):
     except Exception as e:
         print("playSound error:", e)
     finally:
-        # best effort: delete once playback is fully done
+        try:
+            pygame.mixer.music.unload()   # Windows won't delete a file pygame still has open
+        except Exception:
+            pass
         try:
             fn.unlink()
         except Exception:
             pass
 
+
 def kill_edge():
-    for p in psutil.process_iter(['pid','name']):
+    for p in psutil.process_iter(['pid', 'name']):
         if p.info['name'] and 'msedge' in p.info['name'].lower():
-            try: p.terminate()
-            except: pass
+            try:
+                p.terminate()
+            except:
+                pass
+
 
 class StreamManager:
     def __init__(self, subdir):
-        self.dir   = BASE_DIR/subdir; self.dir.mkdir(exist_ok=True)
-        self.ctx   = None; self.page = None
+        self.dir   = BASE_DIR / subdir
+        self.dir.mkdir(exist_ok=True)
+        self.ctx   = None
+        self.page  = None
+        self._data_page = None   # background page used only for JSON fetches
         self.ready = asyncio.Event()
         self._mlb_feed_index = 0
 
@@ -111,9 +170,7 @@ class StreamManager:
         await asyncio.sleep(1)
         self.ready.set()
 
-    # ——— BACK IN StreamManager ———
     async def mute_page(self):
-        """Mute all audio/video on the current page."""
         if self.page:
             await self.page.evaluate(
                 "() => { document.querySelectorAll('audio, video, iframe').forEach(el=>el.muted = true); }"
@@ -121,204 +178,265 @@ class StreamManager:
             dbg(f"Muted {self.dir.name} page")
 
     async def unmute_page(self):
-        """Unmute all audio/video on the current page."""
         if self.page:
             await self.page.evaluate(
                 "() => { document.querySelectorAll('audio, video, iframe').forEach(el=>el.muted = false); }"
             )
             dbg(f"Unmuted {self.dir.name} page")
+
+    async def fetch_json(self, url):
+        """GET a JSON url from inside a real nba.com page (same-origin as the site's own calls)."""
+        await self.ready.wait()
+        if not self._data_page or self._data_page.is_closed():
+            self._data_page = await self.ctx.new_page()
+            await self._data_page.goto("https://www.nba.com/games", wait_until="domcontentloaded")
+        status, text = await self._data_page.evaluate(
+            "async u => { const r = await fetch(u); return [r.status, await r.text()]; }", url
+        )
+        if status != 200:
+            raise RuntimeError(f"{url} returned {status}")
+        return json.loads(text)
+
     async def open(self, url):
 
         async def wait_for_network_idle_with_timeout(page, timeout):
             try:
-                # Wait for the network idle state with a manual timeout
                 await asyncio.wait_for(page.wait_for_load_state("networkidle"), timeout)
-                print("Network idle state achieved.")
             except asyncio.TimeoutError:
-                print(f"Operation timed out after {timeout} seconds.")
-
-        # Example usage with a 10-second timeout
+                print(f"Network idle timed out after {timeout}s")
 
         await self.ready.wait()
         if self.page:
             await self.page.close()
         self.page = await self.ctx.new_page()
         await self.page.goto(url)
-        dbg("Opened", url)
+        dbg("Opened", url, "→ now", self.page.url)
         await self.unmute_page()
-        # — NBA auto‑login & click “Listen”/“Watch Live” —
+
         if self.dir.name.lower() == "nba":
             try:
                 await self.page.wait_for_selector('#onetrust-accept-btn-handler', timeout=3000)
                 await self.page.click('#onetrust-accept-btn-handler')
-                dbg("Clicked cookie‑consent accept")
+                dbg("Clicked cookie-consent accept")
             except Exception:
                 pass
 
-            # If signed‑out link present, go log in
-            if await self.page.query_selector('a[href="/account/sign-in"]'):
-                dbg("NBA signed‑out → signing in…")
-                await self.page.goto("https://www.nba.com/account/sign-in")
-                await self.page.wait_for_selector("#email")
-                creds = (BASE_DIR/"credentials-nba.txt").read_text().splitlines()
-                user, pwd = creds[0], creds[1]
-                await self.page.fill("#email", user)
-                await self.page.fill("#password", pwd)
-                await self.page.click("#submit")
-                await self.page.wait_for_load_state("networkidle")
+            if await self._nba_signed_out():
+                dbg("NBA signed-out → signing in…")
+                await self._nba_login()
                 await self.page.goto(url)
 
-            # then kick off the audio
+            await self._nba_press_play()
+            # Signed-out visitors still get a play button; clicking it raises a
+            # "League Pass activation / Sign in with NBA ID" popup. Log in and retry once.
+            upsell = self.page.locator('a[class*="ModalBody_upsellAuthButton__"]').first
             try:
-                await self.page.wait_for_selector('button:text("Watch Live")', timeout=5000)
-                await self.page.click('button:text("Watch Live")')
-                dbg("Clicked NBA “Watch Live”")
-            except:
-                try:
-                    await self.page.wait_for_selector('button:text("Listen")', timeout=5000)
-                    await self.page.click('button:text("Listen")')
-                    dbg("Clicked NBA “Listen”")
-                except:
-                    dbg("NBA watch button not found.")
+                await upsell.wait_for(state="visible", timeout=2000)
+                dbg("NBA sign-in popup after play → signing in…")
+                await self._nba_login()
+                await self.page.goto(url)
+                await self._nba_press_play()
+            except PlaywrightTimeoutError:
+                pass
 
-        # … inside your auto‑login routine, after you do page.goto(url) …
-# … inside your auto‑login routine, after you do page.goto(url) …
         elif self.dir.name.lower() == "mlb":
-            # give the page a moment to settle
             await wait_for_network_idle_with_timeout(self.page, timeout=10)
+            await self._mlb_dismiss_cookies()
+            await self._mlb_login()
+            await self._mlb_pick_audio_feed()
 
-            # 1) dismiss OneTrust banner (main frame or any frame)
-            btn = await self.page.query_selector('#onetrust-accept-btn-handler')
+    async def _nba_press_play(self):
+        """Click 'Watch Live' (not 'Resume', which jumps back to a saved spot); fall back to the play button, then Listen."""
+        page = self.page
+        live   = page.get_by_role("button", name="Watch Live")
+        play   = page.locator(
+            'button[class*="Play_buttonContainer__"][data-is-post-game="false"]'
+        ).filter(has=page.locator('svg[class*="Play_playIcon__"]')).first
+        listen = page.get_by_role("button", name="Listen")
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            try:
+                for name, loc in (("Watch Live", live.first), ("play button", play), ("Listen", listen.first)):
+                    if await loc.is_visible():
+                        await loc.click()
+                        dbg("Clicked NBA", name)
+                        return
+            except Exception as e:
+                dbg("NBA play click retry:", e)
+            await asyncio.sleep(0.4)
+        dbg("NBA watch button not found.")
+
+    async def _nba_signed_out(self):
+        """True if the game page says we are not signed in.
+
+        The page marks its hero section data-is-nba-authenticated="true|false",
+        which is available as soon as the page renders.
+        """
+        hero = self.page.locator("section[data-is-nba-authenticated]").first
+        try:
+            await hero.wait_for(state="attached", timeout=15000)
+            return (await hero.get_attribute("data-is-nba-authenticated")) == "false"
+        except Exception as e:
+            dbg("NBA auth flag not found:", e)
+            return False
+
+    async def _nba_login(self, timeout=45):
+        """Go through the NBA sign-in steps (email, Continue, password, Sign in) as they appear."""
+        user, pwd = (BASE_DIR / "credentials-nba.txt").read_text().splitlines()[:2]
+        page = self.page
+        await page.goto("https://www.nba.com/account/sign-in")
+        email_f = page.locator('#email, input[type="email"], input[name="email"]').first
+        pwd_f   = page.locator('#password, input[type="password"]').first
+        button  = page.locator(
+            '#submit, #email-submit, [data-testid="continue"], button[type="submit"], input[type="submit"]'
+        ).first
+        deadline = time.monotonic() + timeout
+        email_done = False
+        while time.monotonic() < deadline:
+            try:
+                if await pwd_f.is_visible():
+                    await pwd_f.fill(pwd)
+                    await button.click()
+                    dbg("Submitted NBA password")
+                    await asyncio.sleep(3)
+                    if not await pwd_f.is_visible():
+                        return
+                elif await email_f.is_visible() and not email_done:
+                    await email_f.fill(user)
+                    await page.keyboard.press("Tab")
+                    await button.click()
+                    email_done = True
+                    dbg("Submitted NBA email")
+                    await asyncio.sleep(2)
+                elif "/account/sign-in" not in page.url:
+                    return   # redirected away from the sign-in page: logged in
+                else:
+                    await asyncio.sleep(0.5)
+            except Exception as e:   # page navigated mid-check; look again
+                dbg("NBA login step retry:", e)
+                await asyncio.sleep(1)
+        dbg("NBA login did not finish within", timeout, "seconds")
+
+    async def _mlb_dismiss_cookies(self):
+        btn = await self.page.query_selector('#onetrust-accept-btn-handler')
+        if btn:
+            await btn.click()
+            return
+        for frame in self.page.frames:
+            btn = await frame.query_selector('#onetrust-accept-btn-handler')
             if btn:
                 await btn.click()
-                dbg("Clicked OneTrust accept in main frame")
-            else:
-                for frame in self.page.frames:
-                    btn = await frame.query_selector('#onetrust-accept-btn-handler')
-                    if btn:
-                        await btn.click()
-                        dbg(f"Clicked OneTrust accept in frame {frame.name or frame.url}")
-                        break
+                return
 
-            # 2) detect & fill username if we’re on the login page
+    async def _mlb_login(self, timeout=45):
+        """Work through whichever MLB login step is on screen until the player page is up.
+
+        The steps (username, 'verify with password', password) can each be skipped
+        or come in a different order, so look at the page every half second
+        instead of waiting for a fixed sequence.
+        """
+        username, password = (BASE_DIR / "credentials-mlb.txt").read_text().splitlines()[:2]
+        user_sel = 'input[name="identifier"], input[autocomplete="username"]'
+        pwd_sel  = 'input[name="credentials.passcode"], input[type="password"]'
+        verify_sel = 'a.select-factor:has-text("Verify Account With Password"), a:has-text("Verify Account With Password")'
+        submit_sel = ('input.button-primary[type="submit"], input[type="submit"], '
+                      'button[type="submit"]')
+        page = self.page
+        deadline = time.monotonic() + timeout
+        quiet = 0
+        while time.monotonic() < deadline:
             try:
-                identifier = await self.page.wait_for_selector(
-                    'input[name="identifier"], input[autocomplete="username"]',
-                    timeout=5000
-                )
-                dbg("MLB login prompt detected – filling username/password")
+                if await page.locator(pwd_sel).first.is_visible():
+                    quiet = 0
+                    await page.locator(pwd_sel).first.fill(password)
+                    await page.locator(submit_sel).first.click()
+                    dbg("Submitted MLB password")
+                    await asyncio.sleep(3)
+                elif await page.locator(verify_sel).first.is_visible():
+                    quiet = 0
+                    await page.locator(verify_sel).first.click()
+                    dbg("Clicked 'Verify Account With Password'")
+                    await asyncio.sleep(1)
+                elif await page.locator(user_sel).first.is_visible():
+                    quiet = 0
+                    await page.locator(user_sel).first.fill(username)
+                    await page.locator(submit_sel).first.click()
+                    dbg("Submitted MLB username")
+                    await asyncio.sleep(2)
+                elif "/tv/" in page.url:
+                    # no login field on the player page; make sure it stays that way
+                    quiet += 1
+                    if quiet >= 4:
+                        await page.wait_for_load_state("networkidle")
+                        return
+                    await asyncio.sleep(0.5)
+                else:
+                    await asyncio.sleep(0.5)
+            except Exception as e:   # page navigated mid-check; look again
+                dbg("MLB login step retry:", e)
+                await asyncio.sleep(1)
+        dbg("MLB login did not finish within", timeout, "seconds")
 
-                # read credentials
-                username, password = (BASE_DIR / "credentials-mlb.txt")\
-                    .read_text().splitlines()[:2]
+    async def _mlb_pick_audio_feed(self):
+        try:
+            await self.page.get_by_role("button", name="Broadcast selector").click(timeout=8000)
+            feeds = self.page.get_by_role("button").filter(has=self.page.get_by_label("AUDIO -"))
+            count = await feeds.count()
+            if count == 0:
+                dbg("No audio feeds found, leaving the TV stream")
+                return
+            feed_btn = feeds.nth(self._mlb_feed_index % count)
+            label = await feed_btn.get_attribute("aria-label")
+            await feed_btn.click()
+            dbg(f"Clicked MLB audio feed: {label}")
+            self._mlb_feed_index += 1
+        except Exception as e:
+            dbg("Audio-feed attempt failed:", e)
 
-                # fill username + continue
-                await identifier.fill(username)
-                await self.page.click(
-                    'input.button-primary[type="submit"], input[type="submit"][value="Continue"]'
-                )
-                dbg("Submitted MLB username")
-
-                # optional “Verify Account With Password”
-                try:
-                    verify = await self.page.wait_for_selector(
-                        'a.button.select-factor.link-button:has-text("Verify Account With Password")',
-                        timeout=2000
-                    )
-                    await verify.click()
-                    dbg("Clicked ‘Verify Account With Password’")
-                except PlaywrightTimeoutError:
-                    dbg("No ‘Verify Account With Password’ link")
-
-            except PlaywrightTimeoutError:
-                dbg("No MLB username prompt (already signed in?)")
-
-            # 3) detect & fill password if prompted
-            try:
-                pwd_field = await self.page.wait_for_selector(
-                    'input[name="credentials.passcode"], #input62',
-                    timeout=2000
-                )
-                await pwd_field.fill(password)
-                dbg("Filled MLB password")
-
-                await self.page.wait_for_selector(
-                    'input.button.button-primary[type="submit"][value="Log in"][data-type="save"]')
-                await self.page.click('input.button.button-primary[type="submit"][value="Log in"][data-type="save"]')
-
-                await self.page.wait_for_url("**/tv/**", timeout=5000)
-
-                # now we’re on the protected MLB TV page
-                await self.page.wait_for_load_state("networkidle")
-
-                # === Try Audio Feed First ===
-                try:
-                    # 1) open the broadcast selector
-                    await self.page.get_by_role("button", name="Broadcast selector").click()
-                    dbg("Clicked Broadcast selector")
-
-                    # 2) grab *all* audio‐feed buttons by their accessible name
-                    feeds = self.page.get_by_role("button").filter(
-                        has=self.page.get_by_label("AUDIO -")
-                    )
-                    count = await feeds.count()
-                    if count > 0:
-                        # pick the one at our current index
-                        idx = self._mlb_feed_index % count
-                        feed_btn = feeds.nth(idx)
-                        label = await feed_btn.get_attribute("aria-label")
-                        await feed_btn.click()
-                        dbg(f"Clicked MLB audio feed: {label}")
-                        self._mlb_feed_index += 1
-                        return  # done—audio is playing
-                    else:
-                        dbg("No enabled audio feeds found, falling back to TV")
-                except Exception as e:
-                    dbg("Audio‐feed attempt failed:", e)
-
-                # === Fallback to TV (do nothing since the video is already loaded) ===
-                dbg("Falling back to TV stream")
-            except PlaywrightTimeoutError:
-                dbg("No MLB password prompt (already signed in?)")
 
 class GameCycler:
     def __init__(self, root):
-        self.root       = root
-        root.title("NBA + MLB Cycler")
-        self.lbl1       = tk.Label(root, text="Loading games…", font=("Arial",16))
+        self.root = root
+        root.title("NBA + MLB Cycler")
+        self.lbl1 = tk.Label(root, text="Loading games…", font=("Arial", 16))
         self.lbl1.pack(pady=8)
-        self.lbl2       = tk.Label(root, text="",             font=("Arial",14))
+        self.lbl2 = tk.Label(root, text="", font=("Arial", 14))
         self.lbl2.pack(pady=4)
         tk.Button(root, text="Next Game", command=self.next_game).pack(pady=10)
 
-        self.nba_mgr    = StreamManager("nba")
-        self.mlb_mgr    = StreamManager("mlb")
-        self.game_list  = []   # list of (league, meta_dict)
-        self.idx        = 0
-        self.current    = None
+        self.nba_mgr   = StreamManager("nba")
+        self.mlb_mgr   = StreamManager("mlb")
+        self.game_list = []
+        self.idx       = 0
+        self.current   = None
+        self.last_mgr  = None
 
+        # ── Re-entrancy guards ───────────────────────────────────────────
+        self.loading              = False
+        self._busy                = False   # single-flight: only one load at a time
+        self._pending_next        = False   # queue one next while busy
+        self._last_next_ts        = 0.0     # debounce timestamp
+        self._loading_thread_alive = False
+        # ─────────────────────────────────────────────────────────────────
 
-        # before starting asyncio:
         self.first_load = True
         threading.Thread(target=self._startup_sound_loop, daemon=True).start()
 
         pygame.mixer.init()
-        self.loop       = asyncio.new_event_loop()
+        self.loop = asyncio.new_event_loop()
         threading.Thread(target=self._run_loop, daemon=True).start()
         asyncio.run_coroutine_threadsafe(self._startup(), self.loop)
 
     def _startup_sound_loop(self):
-        # runs until first_load is set False
         while self.first_load:
-            # update on‑screen prompt
             self.root.after(0, lambda: self.lbl1.config(text="Opening, please wait…"))
             playSound("Opening, please wait")
             time.sleep(4)
+
     def _status_key(self, entry):
         league, meta = entry
         if league == "NBA":
             code = meta.get("gameStatus", 1)
-            # Live→0, Final→1, Scheduled→2
             return 0 if code == 2 else 1 if code == 3 else 2
         else:
             state = meta.get("state", "Preview")
@@ -332,106 +450,126 @@ class GameCycler:
         dbg("Starting browsers…")
         await asyncio.gather(self.nba_mgr.start(), self.mlb_mgr.start())
 
-        # fetch only *meta* for today's NBA + MLB
         await self._fetch_nba_meta()
         await self._fetch_mlb_meta()
 
-        # split into separate NBA/MLB lists
         nba_list = [e for e in self.game_list if e[0] == "NBA"]
         mlb_list = [e for e in self.game_list if e[0] == "MLB"]
-
-        # sort by in‑progress / final / scheduled
         nba_list.sort(key=self._status_key)
         mlb_list.sort(key=self._status_key)
+        self.game_list = mlb_list + nba_list
 
-        # recombine
-        self.game_list = nba_list + mlb_list
-        dbg("Sorted NBA then MLB:", [
-            (l, m.get("gameStatus") or m.get("state")) for l,m in self.game_list
-        ])
-
-        # load first
         self.root.after(0, self._load_and_show, self.idx)
 
-    async def _fetch_nba_meta(self):
-        url = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
-        dbg("🔍 _fetch_nba_meta starting:", url)
+    # ── next_game: debounce + single-flight + pending queue ───────────────
+    def next_game(self):
+        # Debounce: ignore rapid double-fires (controller bounce, double clicks)
+        now = time.time()
+        if now - self._last_next_ts < 0.9:
+            return
+        self._last_next_ts = now
+
+        if not self.game_list:
+            return
+
+        # Single-flight: if already loading, queue one pending next
+        if self._busy:
+            self._pending_next = True
+            return
+
+        self._busy = True
+        self.idx   = (self.idx + 1) % len(self.game_list)
+        self._load_and_show(self.idx)
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _load_and_show(self, idx):
+        self.lbl1.config(text="Loading next game…")
+        self.lbl2.config(text="")
+        self.loading = True
+
+        # Guard against duplicate loading threads
+        if not self._loading_thread_alive:
+            self._loading_thread_alive = True
+            threading.Thread(target=self._loading_loop, daemon=True).start()
+
+        asyncio.run_coroutine_threadsafe(self._fetch_and_display(idx), self.loop)
+
+    def _loading_loop(self):
         try:
-            async with aiohttp.ClientSession() as s:
-                async with s.get(url) as r:
-                    dbg("NBA response status:", r.status)
-                    text = await r.text()
-                    data = json.loads(text)
-            games = data.get('scoreboard', {}).get('games', [])
-            dbg(f"Found {len(games)} NBA games")
-            for g in games:
+            while getattr(self, "loading", False):
+                playSound("Loading next game")
+                time.sleep(4)
+        finally:
+            self._loading_thread_alive = False
+
+    async def _fetch_nba_scoreboard(self):
+        """Today's NBA scoreboard JSON.
+
+        cdn.nba.com answers 403 to plain scripts (aiohttp/curl); it only answers
+        a real page on nba.com. Try the cheap request first, then fetch from
+        inside the NBA browser.
+        """
+        try:
+            async with aiohttp.ClientSession(headers=NBA_HEADERS) as s:
+                async with s.get(NBA_SCOREBOARD_URL) as r:
+                    if r.status == 200:
+                        return await r.json(content_type=None)
+                    dbg("NBA scoreboard direct fetch status", r.status)
+        except Exception as e:
+            dbg("NBA scoreboard direct fetch failed:", e)
+        return await self.nba_mgr.fetch_json(NBA_SCOREBOARD_URL)
+
+    async def _fetch_nba_meta(self):
+        try:
+            data = await self._fetch_nba_scoreboard()
+            for g in data.get('scoreboard', {}).get('games', []):
                 self.game_list.append(("NBA", {
                     "gameId":         g["gameId"],
                     "awayTeam":       g["awayTeam"],
                     "homeTeam":       g["homeTeam"],
                     "gameStatus":     g["gameStatus"],
-                    "gameStatusText": g.get("gameStatusText",""),
-                    "gameDate":       g.get("gameDate")    # include for start‑time logic
+                    "gameStatusText": g.get("gameStatusText", ""),
+                    "gameTimeUTC":    g.get("gameTimeUTC"),
                 }))
         except Exception as e:
             dbg("NBA meta fetch error:", e)
 
     async def _fetch_mlb_meta(self):
-        dbg("🔍 _fetch_mlb_meta starting")
         try:
             today = datetime.now().strftime("%Y-%m-%d")
             url   = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={today}"
             async with aiohttp.ClientSession() as s:
                 async with s.get(url) as r:
-                    dbg("MLB response status:", r.status)
                     data = await r.json()
-            for date in data.get("dates",[]):
-                for g in date.get("games",[]):
+            for date in data.get("dates", []):
+                for g in date.get("games", []):
                     self.game_list.append(("MLB", {
                         "gamePk":   g["gamePk"],
                         "away":     g["teams"]["away"],
                         "home":     g["teams"]["home"],
                         "gameDate": g["gameDate"],
-                        "state":    g["status"]["abstractGameState"]
+                        "state":    g["status"]["abstractGameState"],
                     }))
         except Exception as e:
             dbg("MLB meta fetch error:", e)
 
-    def next_game(self):
-        if not self.game_list:
-            return
-        self.idx = (self.idx + 1) % len(self.game_list)
-        self._load_and_show(self.idx)
-
-    def _load_and_show(self, idx):
-        # announce loading
-        self.lbl1.config(text="Loading next game…")
-        self.lbl2.config(text="")
-        self.loading = True
-        threading.Thread(target=self._loading_loop, daemon=True).start()
-        asyncio.run_coroutine_threadsafe(self._fetch_and_display(idx), self.loop)
-
-    def _loading_loop(self):
-        while getattr(self, "loading", False):
-            playSound("Loading next game")
-            time.sleep(4)
-
     async def _fetch_and_display(self, idx):
+        self.current = None   # clear before fetch — prevents stale game on error
         league, meta = self.game_list[idx]
-        dbg(f"Fetching details for {league}", meta)
-        if league == "NBA":
-            g = await self._fetch_nba_detail(meta["gameId"])
-        else:
-            g = await self._fetch_mlb_detail(meta["gamePk"])
-        self.current = (league, g)
-        self.loading = False
-        self.root.after(0, self._render_current)
+        try:
+            if league == "NBA":
+                g = await self._fetch_nba_detail(meta["gameId"])
+            else:
+                g = await self._fetch_mlb_detail(meta["gamePk"])
+            self.current = (league, g)
+        except Exception as e:
+            dbg("Fetch detail error:", e)
+        finally:
+            self.loading = False
+            self.root.after(0, self._render_current)
 
     async def _fetch_nba_detail(self, gameId):
-        url = "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json"
-        async with aiohttp.ClientSession() as s:
-            r    = await s.get(url)
-            data = await r.json(content_type=None)
+        data = await self._fetch_nba_scoreboard()
         for g in data['scoreboard']['games']:
             if g["gameId"] == gameId:
                 return g
@@ -450,58 +588,67 @@ class GameCycler:
         raise RuntimeError("MLB game not found")
 
     def _render_current(self):
-          # if we’re switching from a previous live stream, mute it
+        try:
+            self._render_current_inner()
+        except Exception as e:
+            dbg("_render_current unexpected error:", e)
+            self.lbl1.config(text="Error loading game")
+            self.lbl2.config(text="")
+            threading.Thread(
+                target=playSound, args=("Sorry, there was an error loading the game.",), daemon=True
+            ).start()
+        finally:
+            self._finish_render()
 
+    def _render_current_inner(self):
         if hasattr(self, "last_mgr") and self.last_mgr:
             asyncio.run_coroutine_threadsafe(self.last_mgr.mute_page(), self.loop)
 
-        # 1) Stop any “loading…” loop
         self.loading = False
 
-        # 2) Only-once startup flag
         if getattr(self, "first_load", True):
             self.first_load = False
 
-        league, g = self.current
-        open_stream = False
-        now = datetime.now().astimezone()
+        if not self.current:
+            self.lbl1.config(text="Could not load game — check your connection")
+            self.lbl2.config(text="")
+            threading.Thread(
+                target=playSound, args=("Could not load game. Please check your internet connection.",), daemon=True
+            ).start()
+            return
 
-        # — NBA —
+        league, g   = self.current
+        open_stream = False
+        now         = datetime.now().astimezone()
+
         if league == "NBA":
-            code = g.get("gameStatus", 1)  # 1=Scheduled, 2=Live, 3=Final
+            code       = g.get("gameStatus", 1)
             away, home = g["awayTeam"], g["homeTeam"]
-            match = f"{away['teamCity']} {away['teamName']} at {home['teamCity']} {home['teamName']}"
+            match      = f"{away['teamCity']} {away['teamName']} at {home['teamCity']} {home['teamName']}"
 
             if code == 1:
-                # Scheduled
-                start_txt = g.get("gameStatusText", "").strip()
-                status = f"Starts at {start_txt}"
-                score = ""
-
-                # if we have ISO start time, open once we're within 45 min before it
-                dt_str = g.get("gameDate")
+                start_txt   = g.get("gameStatusText", "").strip()
+                status      = f"Starts at {start_txt}"
+                score       = ""
+                dt_str      = g.get("gameTimeUTC")
                 if dt_str:
                     try:
                         dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00")).astimezone()
-                        # as soon as now >= (dt - 45min), flag open
                         if now >= dt - timedelta(minutes=45):
                             open_stream = True
                     except Exception:
                         pass
-
             elif code == 2:
-                # Live
-                status = parse_nba_status(g.get("gameStatusText", ""))
-                hs, as_ = home.get("score", 0), away.get("score", 0)
+                status      = parse_nba_status(g.get("gameStatusText", ""))
+                hs, as_     = home.get("score", 0), away.get("score", 0)
                 if hs >= as_:
                     ln, ls, tn, ts = home["teamName"], hs, away["teamName"], as_
                 else:
                     ln, ls, tn, ts = away["teamName"], as_, home["teamName"], hs
-                score = f"{ln} {ls}, {tn} {ts}"
+                score       = f"{ln} {ls}, {tn} {ts}"
                 open_stream = True
-
-            else:  # code == 3 → Final
-                status = "Final"
+            else:
+                status  = "Final"
                 hs, as_ = home.get("score", 0), away.get("score", 0)
                 if hs >= as_:
                     ln, ls, tn, ts = home["teamName"], hs, away["teamName"], as_
@@ -509,27 +656,23 @@ class GameCycler:
                     ln, ls, tn, ts = away["teamName"], as_, home["teamName"], hs
                 score = f"{ln} {ls}, {tn} {ts}"
 
-        # — MLB —
-        else:
-            state = g.get("status", {}).get("abstractGameState", "Preview")
+        else:  # MLB
+            state      = g.get("status", {}).get("abstractGameState", "Preview")
             away, home = g["teams"]["away"], g["teams"]["home"]
-            match = f"{away['team']['name']} at {home['team']['name']}"
+            match      = f"{away['team']['name']} at {home['team']['name']}"
 
             if state == "Preview":
-                # Scheduled
                 dt_str = g.get("gameDate")
                 if dt_str:
                     try:
-                        dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00")).astimezone()
+                        dt        = datetime.fromisoformat(dt_str.replace("Z", "+00:00")).astimezone()
                         start_str = dt.strftime("%I:%M %p").lstrip("0")
                     except Exception:
                         start_str = g.get("status", {}).get("detailedState", "Scheduled")
                 else:
                     start_str = g.get("status", {}).get("detailedState", "Scheduled")
                 status = f"Scheduled at {start_str}"
-                score = ""
-
-                # open once within 45 min of start
+                score  = ""
                 if dt_str:
                     try:
                         dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00")).astimezone()
@@ -537,21 +680,17 @@ class GameCycler:
                             open_stream = True
                     except Exception:
                         pass
-
             elif state == "Live":
-                # Live
-                status = g["status"].get("detailedState", "Live")
+                status  = g["status"].get("detailedState", "Live")
                 hs, as_ = home.get("score", 0), away.get("score", 0)
                 if hs >= as_:
                     ln, ls, tn, ts = home["team"]["name"], hs, away["team"]["name"], as_
                 else:
                     ln, ls, tn, ts = away["team"]["name"], as_, home["team"]["name"], hs
-                score = f"{ln} {ls}, {tn} {ts}"
+                score       = f"{ln} {ls}, {tn} {ts}"
                 open_stream = True
-
             else:
-                # Final
-                status = "Final"
+                status  = "Final"
                 hs, as_ = home.get("score", 0), away.get("score", 0)
                 if hs >= as_:
                     ln, ls, tn, ts = home["team"]["name"], hs, away["team"]["name"], as_
@@ -559,18 +698,11 @@ class GameCycler:
                     ln, ls, tn, ts = away["team"]["name"], as_, home["team"]["name"], hs
                 score = f"{ln} {ls}, {tn} {ts}"
 
-        # — Update UI —
         self.lbl1.config(text=match)
         self.lbl2.config(text=f"{status}\n{score}".strip())
 
-        # — Speak in background —
-        threading.Thread(
-            target=self._speak_all,
-            args=(match, status, score),
-            daemon=True
-        ).start()
+        threading.Thread(target=self._speak_all, args=(match, status, score), daemon=True).start()
 
-        # — Open stream if flagged —
         if open_stream:
             if league == "NBA":
                 url = (
@@ -581,8 +713,18 @@ class GameCycler:
             else:
                 url = f"https://www.mlb.com/tv/g{g['gamePk']}"
                 mgr = self.mlb_mgr
-            asyncio.run_coroutine_threadsafe(mgr.open(url), self.loop)
+            fut = asyncio.run_coroutine_threadsafe(mgr.open(url), self.loop)
+            fut.add_done_callback(
+                lambda f: f.cancelled() or not f.exception() or dbg("open() failed:", repr(f.exception()))
+            )
             self.last_mgr = mgr
+
+    def _finish_render(self):
+        """Release the single-flight lock and run any queued next."""
+        self._busy = False
+        if self._pending_next:
+            self._pending_next = False
+            self.root.after(0, self.next_game)
 
     def _speak_all(self, match, status, score):
         playSound(match)
@@ -590,16 +732,11 @@ class GameCycler:
         if score:
             playSound(score)
 
+
 if __name__ == "__main__":
     kill_edge()
     root = tk.Tk()
     game = GameCycler(root)
-
-    # start listening to the controller
-    controller_thread = threading.Thread(
-        target=controller_loop,
-        args=(game,),
-        daemon=True
-    )
+    controller_thread = threading.Thread(target=controller_loop, args=(game,), daemon=True)
     controller_thread.start()
     root.mainloop()

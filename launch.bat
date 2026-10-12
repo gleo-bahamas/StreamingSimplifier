@@ -4,7 +4,7 @@ REM This script activates the Python virtual environment and runs main.py
 
 REM Define the path to your project directory.
 REM IMPORTANT: Make sure this path is correct for your system.
-set "PROJECT_DIR=C:\Users\admin\StreamingSimplifier"
+set "PROJECT_DIR=%~dp0"
 
 REM Navigate to the project directory
 cd /d "%PROJECT_DIR%"
