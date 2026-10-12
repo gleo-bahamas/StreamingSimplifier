@@ -243,7 +243,7 @@ class StreamManager:
             await wait_for_network_idle_with_timeout(self.page, timeout=10)
             await self._mlb_dismiss_cookies()
             await self._mlb_login()
-            await self._mlb_pick_audio_feed()
+            await self._mlb_tv_else_radio()
 
     async def _nba_press_play(self):
         """Click 'Watch Live' (not 'Resume', which jumps back to a saved spot); fall back to the play button, then Listen."""
@@ -377,21 +377,36 @@ class StreamManager:
                 await asyncio.sleep(1)
         dbg("MLB login did not finish within", timeout, "seconds")
 
-    async def _mlb_pick_audio_feed(self):
+    async def _mlb_tv_else_radio(self):
+        """Leave the TV feed alone; only switch to a radio (AUDIO) feed if no video starts."""
+        page = self.page
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            try:
+                playing = await page.evaluate(
+                    "() => [...document.querySelectorAll('video')].some(v => v.readyState >= 2 && v.videoWidth > 0)"
+                )
+                if playing:
+                    dbg("MLB TV feed is up")
+                    return
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
+        dbg("No MLB TV video after 15s, trying a radio feed")
         try:
-            await self.page.get_by_role("button", name="Broadcast selector").click(timeout=8000)
-            feeds = self.page.get_by_role("button").filter(has=self.page.get_by_label("AUDIO -"))
+            await page.get_by_role("button", name="Broadcast selector").click(timeout=8000)
+            feeds = page.get_by_role("button").filter(has=page.get_by_label("AUDIO -"))
             count = await feeds.count()
             if count == 0:
-                dbg("No audio feeds found, leaving the TV stream")
+                dbg("No MLB radio feeds either")
                 return
             feed_btn = feeds.nth(self._mlb_feed_index % count)
             label = await feed_btn.get_attribute("aria-label")
             await feed_btn.click()
-            dbg(f"Clicked MLB audio feed: {label}")
+            dbg(f"Clicked MLB radio feed: {label}")
             self._mlb_feed_index += 1
         except Exception as e:
-            dbg("Audio-feed attempt failed:", e)
+            dbg("MLB radio feed attempt failed:", e)
 
 
 class GameCycler:
