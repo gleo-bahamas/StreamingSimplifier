@@ -388,6 +388,17 @@ class StreamManager:
                 await asyncio.sleep(1)
         dbg("NBA login did not finish within", timeout, "seconds")
 
+    async def _mlb_dismiss_cookies(self):
+        btn = await self.page.query_selector('#onetrust-accept-btn-handler')
+        if btn:
+            await btn.click()
+            return
+        for frame in self.page.frames:
+            btn = await frame.query_selector('#onetrust-accept-btn-handler')
+            if btn:
+                await btn.click()
+                return
+
     async def _mlb_wait_for_manual_login(self, timeout=300):
         """No saved login: give the user time to sign in by hand until the player page is up."""
         page = self.page
