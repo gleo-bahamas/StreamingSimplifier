@@ -174,21 +174,28 @@ def parse_nba_status(raw: str) -> str:
     return raw
 
 
-def playSound(text):
+_speech_lock = threading.Lock()   # one clip at a time: the pygame mixer has a single music channel
+
+
+def playSound(text, cancel=None):
+    """Speak text. Clips queue behind each other; if cancel() is true when its turn comes, it is skipped.
+
+    Without the lock, overlapping clips (e.g. "Loading next game" and the matchup) cut each other off.
+    """
     fn = SPEECH_DIR / f"speech_{uuid.uuid4().hex}.mp3"
     try:
-        gTTS(text=text, lang="en").save(str(fn))
-        pygame.mixer.music.load(str(fn))
-        pygame.mixer.music.play()
-        while pygame.mixer.music.get_busy():
-            time.sleep(0.1)
+        gTTS(text=text, lang="en").save(str(fn))     # slow network step, kept outside the lock
+        with _speech_lock:
+            if cancel and cancel():
+                return
+            pygame.mixer.music.load(str(fn))
+            pygame.mixer.music.play()
+            while pygame.mixer.music.get_busy():
+                time.sleep(0.1)
+            pygame.mixer.music.unload()              # Windows won't delete a file pygame still has open
     except Exception as e:
         print("playSound error:", e)
     finally:
-        try:
-            pygame.mixer.music.unload()   # Windows won't delete a file pygame still has open
-        except Exception:
-            pass
         try:
             fn.unlink()
         except Exception:
@@ -196,12 +203,29 @@ def playSound(text):
 
 
 def kill_edge():
+    """Close any running Edge, then wait until it has really exited.
+
+    Starting a new Edge while the old one is still shutting down makes the new one hand off to it
+    and exit, which Playwright reports as "Target page, context or browser has been closed".
+    Only msedge.exe is touched (not msedgewebview2.exe, which other apps use).
+    """
+    procs = []
     for p in psutil.process_iter(['pid', 'name']):
-        if p.info['name'] and 'msedge' in p.info['name'].lower():
+        if (p.info['name'] or '').lower() == 'msedge.exe':
             try:
                 p.terminate()
-            except:
+                procs.append(p)
+            except Exception:
                 pass
+    _, alive = psutil.wait_procs(procs, timeout=5)
+    for p in alive:
+        try:
+            p.kill()
+        except Exception:
+            pass
+    if alive:
+        psutil.wait_procs(alive, timeout=3)
+    time.sleep(1)
 
 
 class StreamManager:
@@ -211,16 +235,37 @@ class StreamManager:
         self.ctx   = None
         self.page  = None
         self._data_page = None   # background page used only for JSON fetches
+        self._pw = None
         self.ready = asyncio.Event()
         self._mlb_feed_index = 0
 
     async def start(self):
-        pw = await async_playwright().start()
-        self.ctx = await pw.chromium.launch_persistent_context(
-            str(self.dir), channel="msedge", headless=False
-        )
-        await asyncio.sleep(1)
-        self.ready.set()
+        last = None
+        for attempt in range(1, 4):
+            try:
+                if self._pw is None:
+                    self._pw = await async_playwright().start()
+                self.ctx = await self._pw.chromium.launch_persistent_context(
+                    str(self.dir), channel="msedge", headless=False
+                )
+                await asyncio.sleep(1)
+                self.ready.set()
+                return
+            except Exception as e:
+                last = e
+                dbg(f"Starting the {self.dir.name} browser failed (try {attempt}/3): {e!r}"[:300])
+                await asyncio.sleep(3)
+        raise last
+
+    async def _new_page(self):
+        """A fresh tab; if the browser window has been closed or crashed, start it again first."""
+        try:
+            return await self.ctx.new_page()
+        except Exception as e:
+            dbg(f"{self.dir.name} browser was closed ({e!r}); restarting it"[:300])
+            self.page = self._data_page = None
+            await self.start()
+            return await self.ctx.new_page()
 
     async def mute_page(self):
         if self.page:
@@ -239,15 +284,29 @@ class StreamManager:
     async def fetch_json(self, url):
         """GET a JSON url from inside a real nba.com page (same-origin as the site's own calls)."""
         await self.ready.wait()
-        if not self._data_page or self._data_page.is_closed():
-            self._data_page = await self.ctx.new_page()
-            await self._data_page.goto("https://www.nba.com/games", wait_until="domcontentloaded")
-        status, text = await self._data_page.evaluate(
-            "async u => { const r = await fetch(u); return [r.status, await r.text()]; }", url
-        )
-        if status != 200:
-            raise RuntimeError(f"{url} returned {status}")
-        return json.loads(text)
+        try:
+            if not self._data_page or self._data_page.is_closed():
+                dbg("NBA fallback: opening nba.com/games…")
+                self._data_page = await self._new_page()
+                await self._data_page.goto("https://www.nba.com/games", wait_until="domcontentloaded", timeout=20000)
+                dbg("NBA fallback: page loaded, now at", self._data_page.url)
+            dbg("NBA fallback: requesting scoreboard JSON from the page…")
+            status, text = await self._data_page.evaluate(
+                "async u => { const r = await fetch(u); return [r.status, await r.text()]; }", url
+            )
+            dbg("NBA fallback: JSON request returned status", status, "length", len(text))
+            if status != 200:
+                raise RuntimeError(f"{url} returned {status}")
+            return json.loads(text)
+        except Exception:
+            # start from a fresh page next time instead of reusing a broken one
+            page, self._data_page = self._data_page, None
+            if page and not page.is_closed():
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+            raise
 
     async def open(self, url):
 
@@ -260,7 +319,7 @@ class StreamManager:
         await self.ready.wait()
         if self.page:
             await self.page.close()
-        self.page = await self.ctx.new_page()
+        self.page = await self._new_page()
         await self.page.goto(url)
         dbg("Opened", url, "→ now", self.page.url)
         await self.unmute_page()
@@ -538,7 +597,7 @@ class GameCycler:
     def _startup_sound_loop(self):
         while self.first_load:
             self.root.after(0, lambda: self.lbl1.config(text="Opening, please wait…"))
-            playSound("Opening, please wait")
+            playSound("Opening, please wait", cancel=lambda: not self.first_load)
             time.sleep(4)
 
     def _status_key(self, entry):
@@ -574,14 +633,18 @@ class GameCycler:
         dbg("Starting browsers…")
         await asyncio.gather(self.nba_mgr.start(), self.mlb_mgr.start())
 
-        await self._fetch_nba_meta()
         await self._fetch_mlb_meta()
+        try:
+            await asyncio.wait_for(self._fetch_nba_meta(), 30)
+        except asyncio.TimeoutError:
+            dbg("NBA scoreboard timed out after 30s; continuing without NBA games")
 
         nba_list = [e for e in self.game_list if e[0] == "NBA"]
         mlb_list = [e for e in self.game_list if e[0] == "MLB"]
         nba_list.sort(key=self._status_key)
         mlb_list.sort(key=self._status_key)
         self.game_list = self._favorites_first(mlb_list) + self._favorites_first(nba_list)
+        dbg(f"Game list ready: {len(mlb_list)} MLB, {len(nba_list)} NBA")
 
         self.root.after(0, self._load_and_show, self.idx)
 
@@ -621,7 +684,7 @@ class GameCycler:
     def _loading_loop(self):
         try:
             while getattr(self, "loading", False):
-                playSound("Loading next game")
+                playSound("Loading next game", cancel=lambda: not self.loading)
                 time.sleep(4)
         finally:
             self._loading_thread_alive = False
@@ -634,7 +697,7 @@ class GameCycler:
         inside the NBA browser.
         """
         try:
-            async with aiohttp.ClientSession(headers=NBA_HEADERS) as s:
+            async with aiohttp.ClientSession(headers=NBA_HEADERS, timeout=aiohttp.ClientTimeout(total=10)) as s:
                 async with s.get(NBA_SCOREBOARD_URL) as r:
                     if r.status == 200:
                         return await r.json(content_type=None)
@@ -682,7 +745,7 @@ class GameCycler:
         league, meta = self.game_list[idx]
         try:
             if league == "NBA":
-                g = await self._fetch_nba_detail(meta["gameId"])
+                g = await asyncio.wait_for(self._fetch_nba_detail(meta["gameId"]), 30)
             else:
                 g = await self._fetch_mlb_detail(meta["gamePk"])
             self.current = (league, g)
