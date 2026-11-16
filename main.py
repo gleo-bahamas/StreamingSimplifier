@@ -248,6 +248,7 @@ class StreamManager:
                 self.ctx = await self._pw.chromium.launch_persistent_context(
                     str(self.dir), channel="msedge", headless=False
                 )
+                self.ctx.on("close", lambda *_: dbg(f"{self.dir.name} browser window closed"))
                 await asyncio.sleep(1)
                 self.ready.set()
                 return
@@ -309,6 +310,20 @@ class StreamManager:
             raise
 
     async def open(self, url):
+        """Open a game; if the browser dies mid-way, restart it and try once more."""
+        try:
+            await self._open_once(url)
+        except Exception as e:
+            if "closed" not in str(e).lower() and "crash" not in str(e).lower():
+                raise
+            dbg(f"{self.dir.name} browser died while opening the game ({e!r}); restarting and retrying"[:300])
+            self.page = self._data_page = None
+            self.ready.clear()
+            await asyncio.to_thread(kill_edge)
+            await self.start()
+            await self._open_once(url)
+
+    async def _open_once(self, url):
 
         async def wait_for_network_idle_with_timeout(page, timeout):
             try:
@@ -373,6 +388,8 @@ class StreamManager:
                         dbg("Clicked NBA", name)
                         return
             except Exception as e:
+                if "closed" in str(e).lower():
+                    raise   # browser is gone: let open() restart it instead of spinning here
                 dbg("NBA play click retry:", e)
             await asyncio.sleep(0.4)
         dbg("NBA watch button not found.")
