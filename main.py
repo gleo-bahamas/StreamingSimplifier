@@ -258,6 +258,16 @@ class StreamManager:
                 await asyncio.sleep(3)
         raise last
 
+    async def _close_stray_tabs(self):
+        """Close tabs Edge restored from earlier runs (anything that isn't our game/data page)."""
+        keep = {self.page, self._data_page}
+        for p in list(self.ctx.pages):
+            if p not in keep:
+                try:
+                    await p.close()
+                except Exception:
+                    pass
+
     async def _new_page(self):
         """A fresh tab; if the browser window has been closed or crashed, start it again first."""
         try:
@@ -335,6 +345,7 @@ class StreamManager:
         if self.page:
             await self.page.close()
         self.page = await self._new_page()
+        await self._close_stray_tabs()
         await self.page.goto(url)
         dbg("Opened", url, "→ now", self.page.url)
         await self.unmute_page()
