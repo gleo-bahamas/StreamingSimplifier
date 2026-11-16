@@ -238,6 +238,8 @@ class StreamManager:
         self._pw = None
         self.ready = asyncio.Event()
         self._mlb_feed_index = 0
+        self._open_task = None   # the open() currently running; a newer one cancels it
+        self._ctx_dead = False   # True only when the whole browser really closed
 
     async def start(self):
         last = None
@@ -248,7 +250,8 @@ class StreamManager:
                 self.ctx = await self._pw.chromium.launch_persistent_context(
                     str(self.dir), channel="msedge", headless=False
                 )
-                self.ctx.on("close", lambda *_: dbg(f"{self.dir.name} browser window closed"))
+                self._ctx_dead = False
+                self.ctx.on("close", self._on_ctx_close)
                 self.ctx.on("page", self._watch_page)
                 try:
                     import platform
@@ -267,6 +270,10 @@ class StreamManager:
                 dbg(f"Starting the {self.dir.name} browser failed (try {attempt}/3): {e!r}"[:300])
                 await asyncio.sleep(3)
         raise last
+
+    def _on_ctx_close(self, *_):
+        self._ctx_dead = True
+        dbg(f"{self.dir.name} browser window closed")
 
     def _watch_page(self, page):
         """Log what happens to each tab so a crash can be traced."""
@@ -337,11 +344,18 @@ class StreamManager:
             raise
 
     async def open(self, url):
-        """Open a game; if the browser dies mid-way, restart it and try once more."""
+        """Open a game. A newer request cancels the one still running (they share one tab).
+
+        If the whole browser really died, restart it and try once more.
+        """
+        prev, self._open_task = self._open_task, asyncio.current_task()
+        if prev and not prev.done():
+            prev.cancel()
+            await asyncio.wait([prev])
         try:
             await self._open_once(url)
         except Exception as e:
-            if "closed" not in str(e).lower() and "crash" not in str(e).lower():
+            if not self._ctx_dead:
                 raise
             dbg(f"{self.dir.name} browser died while opening the game ({e!r}); restarting and retrying"[:300])
             self.page = self._data_page = None
