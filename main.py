@@ -249,6 +249,16 @@ class StreamManager:
                     str(self.dir), channel="msedge", headless=False
                 )
                 self.ctx.on("close", lambda *_: dbg(f"{self.dir.name} browser window closed"))
+                self.ctx.on("page", self._watch_page)
+                try:
+                    import platform
+                    vm = psutil.virtual_memory()
+                    dbg(f"{self.dir.name} browser started: Edge {self.ctx.browser.version if self.ctx.browser else '?'}, "
+                        f"Python {platform.python_version()}, "
+                        f"RAM free {vm.available // 2**20} of {vm.total // 2**20} MB, "
+                        f"{len(self.ctx.pages)} tab(s) restored")
+                except Exception as e:
+                    dbg("startup info failed:", e)
                 await asyncio.sleep(1)
                 self.ready.set()
                 return
@@ -257,6 +267,13 @@ class StreamManager:
                 dbg(f"Starting the {self.dir.name} browser failed (try {attempt}/3): {e!r}"[:300])
                 await asyncio.sleep(3)
         raise last
+
+    def _watch_page(self, page):
+        """Log what happens to each tab so a crash can be traced."""
+        name = self.dir.name
+        page.on("crash", lambda *_: dbg(f"{name} TAB CRASHED:", page.url))
+        page.on("close", lambda *_: dbg(f"{name} tab closed"))
+        page.on("pageerror", lambda e: dbg(f"{name} page script error:", str(e)[:150]))
 
     async def _close_stray_tabs(self):
         """Close tabs Edge restored from earlier runs (anything that isn't our game/data page)."""
@@ -345,7 +362,14 @@ class StreamManager:
         if self.page:
             await self.page.close()
         self.page = await self._new_page()
+        before = len(self.ctx.pages)
         await self._close_stray_tabs()
+        try:
+            vm = psutil.virtual_memory()
+            dbg(f"{self.dir.name}: opening game; {before} tab(s) before cleanup, "
+                f"{len(self.ctx.pages)} after; RAM free {vm.available // 2**20} MB")
+        except Exception:
+            pass
         await self.page.goto(url)
         dbg("Opened", url, "→ now", self.page.url)
         await self.unmute_page()
