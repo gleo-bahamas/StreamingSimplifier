@@ -202,16 +202,18 @@ def playSound(text, cancel=None):
             pass
 
 
-def kill_edge():
-    """Close any running Edge, then wait until it has really exited.
+def kill_edge(only_dir=None):
+    """Close running Edge (or only the one using profile folder `only_dir`), then wait until it has exited.
 
     Starting a new Edge while the old one is still shutting down makes the new one hand off to it
     and exit, which Playwright reports as "Target page, context or browser has been closed".
     Only msedge.exe is touched (not msedgewebview2.exe, which other apps use).
     """
     procs = []
-    for p in psutil.process_iter(['pid', 'name']):
+    for p in psutil.process_iter(['pid', 'name', 'cmdline']):
         if (p.info['name'] or '').lower() == 'msedge.exe':
+            if only_dir is not None and not any(str(only_dir) in a for a in (p.info.get('cmdline') or [])):
+                continue   # a different Edge (e.g. the other league's): leave it alone
             try:
                 p.terminate()
                 procs.append(p)
@@ -360,7 +362,7 @@ class StreamManager:
             dbg(f"{self.dir.name} browser died while opening the game ({e!r}); restarting and retrying"[:300])
             self.page = self._data_page = None
             self.ready.clear()
-            await asyncio.to_thread(kill_edge)
+            await asyncio.to_thread(kill_edge, self.dir)
             await self.start()
             await self._open_once(url)
 
