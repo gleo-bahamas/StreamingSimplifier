@@ -187,6 +187,35 @@ def parse_nba_status(raw: str) -> str:
     return raw
 
 
+_PERIOD_WORDS = {1: "1st quarter", 2: "2nd quarter", 3: "3rd quarter", 4: "4th quarter"}
+_OT_WORDS = {1: "overtime", 2: "double overtime", 3: "triple overtime"}
+
+
+def live_status_text(box: dict) -> str:
+    """Spoken status from a box score: period and clock ("10:28 to go in the 2nd quarter")."""
+    if str(box.get("gameStatusText", "")).strip().lower() in ("half", "halftime"):
+        return "Halftime"
+    if box.get("gameStatus") == 3:
+        return "Final"
+    p = int(box.get("period") or 0)
+    m = re.match(r"PT(\d+)M([\d.]+)S", str(box.get("gameClock", "")))
+    if not p or not m:
+        return str(box.get("gameStatusText", "")).strip() or "In progress"
+    total = int(m.group(1)) * 60 + float(m.group(2))
+    if p <= 4:
+        label = "the " + _PERIOD_WORDS[p]
+    else:
+        label = _OT_WORDS.get(p - 4, f"{p - 4}th overtime")
+    if total < 0.5:
+        return f"End of {label}"
+    if total < 1:
+        return f"Under a second to go in {label}"
+    if total < 60:
+        n = int(total)
+        return f"{n} second{'s' if n != 1 else ''} to go in {label}"
+    return f"{int(total // 60)}:{int(total % 60):02d} to go in {label}"
+
+
 _speech_lock = threading.Lock()   # one clip at a time: the pygame mixer has a single music channel
 
 
@@ -777,15 +806,18 @@ class GameCycler:
         a real page on nba.com. Try the cheap request first, then fetch from
         inside the NBA browser.
         """
+        return await self._fetch_nba_json(NBA_SCOREBOARD_URL)
+
+    async def _fetch_nba_json(self, url):
         try:
             async with aiohttp.ClientSession(headers=NBA_HEADERS, timeout=aiohttp.ClientTimeout(total=10)) as s:
-                async with s.get(NBA_SCOREBOARD_URL) as r:
+                async with s.get(url) as r:
                     if r.status == 200:
                         return await r.json(content_type=None)
-                    dbg("NBA scoreboard direct fetch status", r.status)
+                    dbg("NBA direct fetch status", r.status)
         except Exception as e:
-            dbg("NBA scoreboard direct fetch failed:", e)
-        return await self.nba_mgr.fetch_json(NBA_SCOREBOARD_URL)
+            dbg("NBA direct fetch failed:", e)
+        return await self.nba_mgr.fetch_json(url)
 
     async def _fetch_nba_meta(self):
         try:
@@ -840,8 +872,34 @@ class GameCycler:
         data = await self._fetch_nba_scoreboard()
         for g in data['scoreboard']['games']:
             if g["gameId"] == gameId:
-                return g
+                return await self._with_live_box(g)
         raise RuntimeError("NBA game not found")
+
+    async def _with_live_box(self, g):
+        """The scoreboard file can lag the real game by a minute or more; the per-game box score is current.
+
+        Only asked for games that have started (the box score does not exist before tip-off).
+        Any failure keeps the scoreboard values.
+        """
+        try:
+            started = g.get("gameStatus") == 2
+            if g.get("gameStatus") == 1 and g.get("gameTimeUTC"):
+                dt = datetime.fromisoformat(g["gameTimeUTC"].replace("Z", "+00:00"))
+                started = datetime.now().astimezone() >= dt
+            if not started:
+                return g
+            url = (f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{g['gameId']}.json"
+                   f"?x={int(time.time())}")
+            box = (await asyncio.wait_for(self._fetch_nba_json(url), 10))["game"]
+            g = dict(g)
+            g["awayTeam"] = dict(g["awayTeam"], score=box["awayTeam"]["score"])
+            g["homeTeam"] = dict(g["homeTeam"], score=box["homeTeam"]["score"])
+            g["gameStatus"] = box.get("gameStatus", g["gameStatus"])
+            g["gameStatusText"] = live_status_text(box)
+            dbg("NBA live box score used:", g["awayTeam"]["score"], "-", g["homeTeam"]["score"], g["gameStatusText"])
+        except Exception as e:
+            dbg("NBA box score not available, using scoreboard:", repr(e)[:150])
+        return g
 
     async def _fetch_mlb_detail(self, gamePk):
         today = datetime.now().strftime("%Y-%m-%d")
