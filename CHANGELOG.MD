@@ -198,3 +198,12 @@ All notable changes documented here; using 0.x “pre-1.0” versioning.
 * **Updating**
   * Added `update.bat` for one-click updates on other laptops.
   * `Launch.ahk` is no longer in the repository; each machine keeps its own copy.
+
+---
+
+## 0.7.2 – 2026-11-18
+
+* **NBA scores**
+  * Live games now take their score and clock from the game's own box score (`boxscore_<gameId>.json`); the day's scoreboard file was found to lag a live game by a minute or more. Games that have not started, and any box-score failure, still use the scoreboard.
+  * The spoken status is built from the period and clock ("10:28 to go in the 2nd quarter", "Halftime", "End of the 1st quarter", "3:10 to go in overtime").
+  * The NBA fetch helper is shared between the scoreboard and box score (direct request first, then from inside the NBA page).

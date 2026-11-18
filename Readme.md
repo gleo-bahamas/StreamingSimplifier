@@ -9,6 +9,7 @@ A local desktop app that cycles through today's MLB and NBA games, announces eac
 * **One game list**: Today's MLB games first, then NBA games, each group ordered live, then final, then upcoming.
 * **Favorite teams first**: Within MLB the Red Sox and Cubs come first, within NBA the Celtics and Knicks (when they play that day). Change the `FAVORITES` list in `main.py` to use your own.
 * **Next Game**: A button (or any controller button) moves to the next game and announces the matchup, status and score with Google text-to-speech.
+* **Current NBA scores**: For a game that has started, the score and clock come from that game's own box score, which is more up to date than the day's scoreboard file (it can lag by a minute or more). If the box score can't be fetched, the scoreboard values are used.
 * **TV first, radio second**:
   * **NBA**: clicks **Watch Live** (not Resume); if that is missing it uses **Listen**.
   * **MLB**: keeps the TV feed MLB.TV loads; only if no video starts within 15 seconds does it switch to a radio (audio) feed.
