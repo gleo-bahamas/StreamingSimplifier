@@ -106,12 +106,25 @@ def controller_loop(app):
     js.init()
     print("Controller initialized:", js.get_name())
 
+    pushed = {}   # axis -> True while the stick is held past the threshold
     while True:
         for ev in pygame.event.get():
-            if ev.type == pygame.JOYBUTTONDOWN \
-                    or ev.type == pygame.JOYAXISMOTION \
-                    or ev.type == pygame.JOYHATMOTION:
+            if ev.type == pygame.JOYBUTTONDOWN:
+                dbg("Controller: button", ev.button)
                 app.root.after(0, app.next_game)
+            elif ev.type == pygame.JOYHATMOTION:
+                if ev.value != (0, 0):          # d-pad pressed (not released)
+                    dbg("Controller: d-pad", ev.value)
+                    app.root.after(0, app.next_game)
+            elif ev.type == pygame.JOYAXISMOTION:
+                # A stick sends dozens of events per push: count one push, then wait for it to
+                # return near the middle. Small drift never counts.
+                if abs(ev.value) > 0.7 and not pushed.get(ev.axis):
+                    pushed[ev.axis] = True
+                    dbg("Controller: stick/trigger axis", ev.axis, "value", round(ev.value, 2))
+                    app.root.after(0, app.next_game)
+                elif abs(ev.value) < 0.3:
+                    pushed[ev.axis] = False
         time.sleep(0.01)
 
 
