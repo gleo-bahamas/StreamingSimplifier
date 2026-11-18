@@ -14,8 +14,10 @@ A local desktop app that cycles through today's MLB and NBA games, announces eac
   * **MLB**: keeps the TV feed MLB.TV loads; only if no video starts within 15 seconds does it switch to a radio (audio) feed.
 * **Auto login**: Signs in to NBA.com and MLB.com for you if you have saved your logins (see below), handling whichever login step is on screen. Otherwise you sign in by hand in the browser window. Browser profiles are kept locally so a saved session can skip the login.
 * **Streams open ahead of time**: Games that start within 45 minutes are opened; the previous stream is muted.
-* **Controller support**: Any button, stick or hat press on a connected controller goes to the next game (via `pygame`).
-* **Rapid-press safe**: Fast double presses are ignored and only one game loads at a time.
+* **Controller support**: Any button press, d-pad press or clear push of a stick on a connected controller goes to the next game (via `pygame`). A stick counts once per push and small drift is ignored.
+* **Rapid-press safe**: Fast double presses are ignored, and a newer game request cancels one that is still loading, so they never fight over the browser tab.
+* **Self-recovering**: If Edge closes mid-game, only that league's browser is restarted and the game is retried once. Old tabs left by earlier runs are closed each time a game opens.
+* **One copy only**: A second copy of the app refuses to start (it would close the first copy's browsers). Each refused launch is noted in `second_launch.log`.
 * **Temporary speech files**: Each spoken clip is deleted right after it plays, leftovers are swept on startup, and the folder is removed on exit.
 
 ---
@@ -77,10 +79,10 @@ A local desktop app that cycles through today's MLB and NBA games, announces eac
 
 ## Usage
 
-* **Windows**: Double-click `launch.bat`, or install [AutoHotkey v1](https://www.autohotkey.com/) and run `Launch.ahk`. Press **F2** to start the app, or to bring it forward if it is already running. Both scripts use their own folder, so the project can live anywhere.
+* **Windows**: Double-click `launch.bat`. It uses its own folder, so the project can live anywhere. If you want a hotkey, make your own AutoHotkey script that runs `launch.bat` when the app window ("NBA + MLB Cycler") is not already open.
 * **Any platform**: With the virtual environment active, run `python main.py`.
 
-On start-up the app closes any open Edge windows, opens the MLB and NBA browsers, loads today's games and starts with the first one. Press **Next Game** (or a controller button) to move on.
+On start-up the app closes any open Edge windows (so save anything open in Edge first), opens the MLB and NBA browsers, loads today's games and starts with the first one. Press **Next Game** (or a controller button) to move on.
 
 ---
 
@@ -88,6 +90,7 @@ On start-up the app closes any open Edge windows, opens the MLB and NBA browsers
 
 * NBA's scoreboard feed (`cdn.nba.com`) refuses plain scripts, so the app falls back to reading it from inside the NBA browser page.
 * If you are never asked to log in again after the first time, the saved profile is working. If you are asked every launch, the site is not keeping a long-lived session cookie.
+* **Updating**: Double-click `update.bat`. It pulls the latest code (or downloads it if the folder is not a git clone) and refreshes the libraries. It never replaces `launch.bat`.
 * Console lines starting with `[DEBUG]` show each step (login, which button was clicked, which feed was chosen). Include them when reporting a problem.
 
 ---
@@ -98,7 +101,7 @@ On start-up the app closes any open Edge windows, opens the MLB and NBA browsers
 StreamingSimplifier/
 ├── main.py            # the app: game list, speech, browsers, logins
 ├── launch.bat         # activates the venv and runs main.py
-├── Launch.ahk         # F2 hotkey to start or focus the app
+├── update.bat         # one-click update to the latest code
 ├── nba_playwright.py  # older standalone NBA script (not used by main.py)
 ├── requirements.txt
 ├── CHANGELOG.MD

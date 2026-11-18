@@ -179,3 +179,22 @@ All notable changes documented here; using 0.x “pre-1.0” versioning.
   * Speech clips are unloaded from pygame before deletion, so they are removed right after playing.
   * Added `.gitignore`; stopped tracking `speech.mp3`.
   * README rewritten for the current single-window app.
+
+---
+
+## 0.7.1 – 2026-11-17
+
+* **Stability**
+  * A newer game request now cancels one that is still loading. Overlapping requests used to close each other's tab and caused "Target page, context or browser has been closed".
+  * If Edge really closes, only that league's browser is restarted and the game retried once; the other league's browser is left alone.
+  * Old tabs from earlier runs are closed each time a game opens.
+  * Browser start-up waits for the old Edge to exit and retries up to 3 times.
+  * A second copy of the app refuses to start (it would close every Edge); refused launches are noted in `second_launch.log`.
+* **Controller**
+  * One press per stick push (drift ignored) and d-pad presses only; previously every stick movement event skipped a game.
+* **Diagnostics**
+  * The console shows browser start-up details (RAM, restored tabs), tab crashes and closes, and which controller event fired.
+  * NBA fetches have timeouts; the first game's teams are announced reliably (speech clips no longer cut each other off).
+* **Updating**
+  * Added `update.bat` for one-click updates on other laptops.
+  * `Launch.ahk` is no longer in the repository; each machine keeps its own copy.
