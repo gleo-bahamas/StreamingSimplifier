@@ -1001,7 +1001,28 @@ class GameCycler:
             playSound(score)
 
 
+def _already_running():
+    """True if another copy of this app is running (only one may own the Edge profiles)."""
+    import socket
+    global _instance_lock
+    _instance_lock = socket.socket()
+    try:
+        _instance_lock.bind(("127.0.0.1", 47653))   # held until this process exits
+        return False
+    except OSError:
+        return True
+
+
 if __name__ == "__main__":
+    if _already_running():
+        # A second copy would close every Edge, including the running copy's browsers.
+        print("The app is already running: not starting a second copy.")
+        try:   # the AutoHotkey launch hides this window, so leave a note that can be read later
+            with open(Path(__file__).with_name("second_launch.log"), "a", encoding="utf-8") as f:
+                f.write(time.strftime("%Y-%m-%d %H:%M:%S") + "  second copy refused (app already running)\n")
+        except Exception:
+            pass
+        sys.exit(0)
     kill_edge()
     root = tk.Tk()
     game = GameCycler(root)
